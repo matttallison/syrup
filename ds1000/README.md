@@ -1,46 +1,33 @@
 # DS-1000
 
-A TR-style drum machine for Nintendo 2DS / 3DS (homebrew), after Roland's TR-1000 workflow. Lives in the Syrup repo; built by `.github/workflows/ds1000.yml` into the `ds1000` release.
+A drum machine for Nintendo 2DS / 3DS (homebrew), with the workflow and look of PICO (Matt's SP-1200-style FM-1 firmware). It's a drum machine, not a sampler: 16 synthesised 808/909-style voices. Lives in the Syrup repo; built by `.github/workflows/ds1000.yml` into the `ds1000` release.
 
 **Install:** FBI > Remote Install > Scan QR Code > `install-qr.png`. Or copy `ds1000.3dsx` to `/3ds/`.
 
-## Sound
+## Layout (PICO style)
 
-16 tracks: BD, SD, LT, MT, HT, RS, CP, CH, OH, CC, RC, CB (808 style), BD9, SD9 (909 style), CL, MA. All synthesised; CH chokes OH.
+- **Top screen:** header (menu, bank, loop + bar.beat, tempo, PLAY / REC / ARMED / COUNT, battery), message line (selected pad + its last velocity, `A3 TOM L  V96`, or the last action), the loop (every pad, one bar at a time: cell height = velocity, shift = nudge, yellow dot = condition, blue dot = ratchet), the hint line. NOTES shows a piano roll instead (in-key rows lit, root red, selected row blue). PUNCHES / FX show the punch lane.
+- **Bottom screen:** six menu tabs (MIX, SND, ENV, FX, SEQ, GLO; tap again to step through its pages), 16 keys, then the page list on the left (a page's second entry indented under it) and the light knob panel: 2x2 knobs, each with its number chip, name and value. Drag a knob right or up to turn it; D-pad left / right nudges the selected one. Knobs that do something (CLEAR, WRITE, COPY, MUTATE, RESET) need two taps (AGAIN).
+- **No hidden menus:** every control is on a page. SELECT steps through every page in order (on PUNCHES it picks the punch, on NOTES the next note).
 
-Hardware tricks (same approach as Syrup):
-- **Core 1 renders, the DSP plays.** Each track's hit is rendered into a sample on the second CPU core only when its sound changes; the DSP chip plays the hits on 16 channels. TUNE is the DSP channel's playback rate, LEVEL / PAN / DELAY are its mix, and the track FILTER is the channel's own hardware biquad.
-- **DSP effect buses** (Syrup's sound-driver copy, `source/ndsp/`): bus 0 runs the master chain (DJ filter + drive), bus 1 a tempo-synced ping-pong delay. If the DSP never returns bus audio, it falls back to direct out.
-- **Sequencer clock** in the DSP frame callback (~4.9 ms).
-- **Mic sampling** (HW page): records 2 s into the selected track, trimmed to the first sound, normalised. SOURCE switches the track between SYNTH and MIC.
-- **Motion** (HW page): tilt left/right sweeps the master filter, tilt forward throws more into the delay, twist bends every hit's pitch, shake rolls the selected track.
-- **Beat light**, **OUTPUT** STEREO / SURROUND / AUTO (surround on headphones), 804 MHz on New 3DS / New 2DS.
-- **LINK** with Syrup or another DS-1000: WIFI HOST / WIFI JOIN (local wireless) or IR SEND / IR RECEIVE, same protocol as Syrup.
+## Keys
 
-From PICO / zp12: 8 velocity levels per step, unquantized recording (QUANTIZE OFF keeps your timing as nudge), count-in and click, ERASE as the playhead passes, UNDO / REDO, TAP TEMPO, CHAIN, note-repeat ROLL (1/8 to 1/64) on held pads, filter types per track (LP, HP, BP, NOTCH, PEAK), SP-style BITS (16 to 4) and RATE crush, START and REVERSE.
+PADS view: keys 1-8 are the bank's pads (L switches bank A / B), keys 9-16 are one-press jobs: REC, ROLL (hold a pad for note repeat), ERASE (hold a pad: its hits vanish as they pass), PUNCH (hold), QUANT, SWING (50 / 54 / 58 / 62 / 66%), UNDO (again: redo), TAP tempo.
+STEPS view (R, or the STEP / DETAIL / NOTES pages): the selected pad's steps for the bar in view; tap to add / remove.
 
-## Velocity, nudge, mic velocity
+Buttons: A play / stop, B REC (stopped: armed, A counts in), X hold = punch, Y hold = note repeat on the selected pad, L bank, R pads / steps, D-pad up / down pad, left / right knob, circle pad up / down velocity and left / right nudge of the selected step, SELECT next page, START save and quit.
 
-- **Circle pad up / down:** the selected step's velocity (8 levels; the bar on the step, the cell height on the top screen). On the pads (TAP / ERASE): the pad velocity.
-- **Circle pad left / right:** the selected step's nudge, up to half a step early or late in 12ths (the dot on the step; the cell shifts on the top screen). Touching an empty step with the circle pad turns it on.
-- **MIC VELOCITY** (HW page): **PADS** reads how hard you tap a pad from the sound of the tap; **TAP MIC** plays the selected track when you tap the console near the mic, louder taps = higher velocity (records in TAP mode). It scales itself to your hardest tap. Headphones keep the speaker from triggering it.
+## Menus
 
-## Screens
+- **MIX:** HOME (SP-style faders for the bank: LEVEL, TUNE, DECAY or CUTOFF), BUS FX (filter LP / HP, drive, echo, echo time) > PAN (bus auto-pan rate, depth, volume), OUT (pad level, pan, drive, echo send) > FADER.
+- **SND:** PAD (voice: any of the 16 sounds, tune, fine, tone) > TRIM (start, direction, choke group), CRUSH (bits 16-4, rate), COPY (pad sound to another pad).
+- **ENV:** FILTER (cutoff, reso, envelope sweep, type LP / HP / BP / NOTCH / PEAK on the DSP's own filter) > LOCUT, AMP (attack, decay).
+- **FX:** PUNCH (REPEAT, STUTTER, TAPE STOP, FADE, REVERSE; rate, decay, level), MOTION (tilt: filter or echo, twist: pitch, shake: roll or punch).
+- **SEQ:** STEP (pad, bar, roll rate, clear pad), DETAIL (velocity 1-127, nudge in 12ths, condition: 75/50/25%, 1ST, 1:2 ... 4:4, NOT 1ST; ratchet), PUNCHES (four per loop: type, bar, move, length), NOTES (step, note, velocity, scale) > KEY, TEMPO (tempo, quantize, loop A-P, bars 1-4) > METER (swing, 16 or 12 steps per bar), SONG (on, step, loop, repeat) > TRANSP, PATTERN (Euclidean or preset bars written onto the pad) > ROTATE (rotate, shift, mutate), PAD TIME (the pad's own rate X1 / 1/2 / X2 / 3/4 / 3/2 / 1/4 / 1/8 and length for polymeter), LOOP TOOLS (clear, copy to).
+- **GLO:** SETUP (save, reset, version), CLICK (off / rec / on, count-in, tick, level), LINK (with Syrup or another DS-1000: wifi host / join, IR send / receive), OUTPUT (stereo / surround / auto on headphones, beat light), TOUCH (velocity: fixed, position on the pad, mic tap loudness, tap the mic to play; PICO's curve; last; fixed value).
 
-Top: pattern bank A-P, all 16 tracks x 16 steps with per-track playheads, status.
+## Hardware
 
-Bottom:
-- **Instrument row** (16): select a track. In MUTE mode, mute it. In TAP mode, play it.
-- **Steps** (16): STEP toggles hits; ACC accents; PROB cycles 100/75/50/25%; SUB cycles ratchets x1-x4. In TAP mode they become 16 pads (play + record while running; hold for ROLL).
-- **Tabs:** STEP, ACC, PROB, SUB, TAP, ERASE (hold a pad: its hits vanish as the playhead passes; stopped: clears the track), MUTE, and the page switch (TRK > FLT > MST > SEQ > HW).
-- **TRK:** TUNE, DECAY, TONE, LEVEL, PAN, DELAY, DRIVE, LAST (per-track pattern length, for polymeters).
-- **FLT:** FILTER type, CUTOFF, RESO, BITS, RATE, START, REVERSE, SOURCE.
-- **MST:** BPM, SWING (50-75%), ACCENT, ROLL, DLY TIME, DLY FDBK, FILTER (LP <- OFF -> HP), DRIVE.
-- **SEQ:** QUANTIZE, CLICK, COUNT-IN (1 bar), CHAIN (plays the used patterns in turn), TAP TEMPO, UNDO (again: redo), SHIFT < / > (rotate the track).
-- **HW:** MIC SAMPLE, MOTION (turning it on re-centres the tilt), BEAT LIGHT, LINK, OUTPUT, MIC VELOCITY, SAVE, CLEAR PATTERN.
+The core-1 worker renders each pad's hit only when its sound changes; the DSP plays the hits on 16 channels (rate = tune, hardware biquad = filter, one-pole = low cut). DSP effect bus 0 runs punch, bus filter, drive and auto-pan; bus 1 the ping-pong echo (Syrup's sound-driver copy in `source/ndsp/`). Sequencer in the DSP frame callback. 804 MHz on New 3DS / New 2DS.
 
-## Buttons
-
-A play/stop, B audition track, X clear track, Y randomize track, D-pad up/down track, left/right BPM, L/R pattern (switches at the end of the bar while playing), SELECT copy pattern to the next slot, START save and quit.
-
-Saves to `/3ds/ds1000/ds1000.sav` (patterns, kit, mic samples, settings); older saves load with full velocity and no nudge.
+Saves to `/3ds/ds1000/ds1000.sav`.
