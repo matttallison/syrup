@@ -41,7 +41,8 @@ enum { P_TUNE, P_DECAY, P_TONE, P_LEVEL, P_PAN, P_DLY, P_DRIVE, P_LASTX, P_FTYPE
 // master parameters
 enum { M_BPM, M_SWING, M_ACC, M_ROLL, M_DTIME, M_DFB, M_FILT, M_DRIVE, NM };
 
-typedef struct { u8 on[NS], acc[NS], prob[NS], sub[NS]; u8 len, pad[3]; } Track;
+typedef struct { u8 on[NS], acc[NS], prob[NS], sub[NS], vel[NS]; s8 nud[NS]; u8 len, pad[3]; } Track;   // vel 0-7, nud -6..+6 (12ths of a step)
+typedef struct { u8 on[NS], acc[NS], prob[NS], sub[NS]; u8 len, pad[3]; } TrackV1;
 typedef struct { Track t[NT]; } Pattern;
 
 static Pattern gPat[NPAT];
@@ -49,6 +50,7 @@ static float gKp[NT][NP];
 static float gMp[NM];
 static u8 gMute[NT];
 static volatile int gCur = 0, gQueued = 0;
+static int gSel = 0;   // selected track
 
 static const char* FT_NAMES[6] = {"OFF", "LP", "HP", "BP", "NOTCH", "PEAK"};
 static const int BITS_V[6] = {16, 12, 10, 8, 6, 4};
@@ -436,85 +438,192 @@ static void busInit(void) {
 }
 
 // ---------------------------------------------------------------- sequencer (DSP frame callback)
-static volatile int gPlaying = 0, gPlayReq = 0, gTick = -1, gSnap = -1, gBeat = 0;
+// Per-step velocity (8 levels, as PICO / zp12) and nudge (+/- half a step in 12ths). A hit nudged late is
+// scheduled after its step starts; one nudged early is scheduled from the step before, so the clock looks
+// one step ahead. Live recording can keep the feel (QUANTIZE OFF stores the timing as nudge).
+static volatile int gPlaying = 0, gPlayReq = 0, gTick = -17, gSnap = -1, gBeat = 0;
 static int gNextTick = 0; static float gStepCd = 0, gStepLen = 1;
 static int gSubLeft[NT]; static float gSubCd[NT], gSubInt[NT], gSubVel[NT];
+typedef struct { float cd, vel; u8 sub, on; } Pend;
+static Pend gPend[NT][2];
 static volatile int gPos[NT];
+static volatile s8 gSkip[NT];   // a step just recorded live (pos + 1): it was heard already, skip it this pass
 #define TQ 64
-typedef struct { u8 t; u8 rec; float vel; } TapEv;
+typedef struct { u8 t; u8 rec; s8 lvl; float vel; } TapEv;   // lvl: the hit's velocity level for recording (-1: pad velocity)
 static TapEv gTapQ[TQ]; static volatile int gTapW = 0, gTapR = 0;
 static volatile int gRollT = -1; static float gRollCd = 0;
 static int gModeTap = 0;
+static int gQuant = 1, gClick = 0, gCountIn = 0, gChain = 0, gTapVel = 7;
+static volatile int gEraseT = -1, gCounting = 0;
+static const float VEL_G[8] = {0.18f, 0.3f, 0.42f, 0.54f, 0.66f, 0.78f, 0.89f, 1.0f};
+static int patUsed(int p);
 
 static float spbNow(void) { return DSPRATE * 60.0f / (bpmOf() * 4.0f); }
 static float velN(void) { return 1.0f - 0.5f * gMp[M_ACC]; }
+static float stepGain(const Track* tr, int s) { return VEL_G[tr->vel[s] & 7] * (tr->acc[s] ? 1.0f : velN()); }
+static float tapGain(void) { return VEL_G[gTapVel & 7] * velN(); }
 
-static void recordHit(int t) {
-	int target = gStepCd > gStepLen * 0.5f ? gTick : gTick + 1;   // nearest step
-	if (target < 0) target = 0;
+// metronome / count-in click on its own DSP channel, straight to the outputs
+#define CLICK_CH 16
+static s16* gClickSmp[2]; static int gClickLen = 0; static ndspWaveBuf gClickWB[2]; static int gClickI = 0;
+static void clickInit(void) {
+	gClickLen = (int)(0.03f * DSPRATE);
+	for (int k = 0; k < 2; k++) {
+		gClickSmp[k] = (s16*)linearAlloc(gClickLen * 2); if (!gClickSmp[k]) { gClickLen = 0; return; }
+		float f = k ? 2400.0f : 1500.0f;
+		for (int i = 0; i < gClickLen; i++) gClickSmp[k][i] = (s16)(sinf(6.2831853f * f * i / DSPRATE) * expf(-i / (0.006f * DSPRATE)) * 16000.0f);
+		DSP_FlushDataCache(gClickSmp[k], gClickLen * 2);
+	}
+	ndspChnReset(CLICK_CH); ndspChnSetInterp(CLICK_CH, NDSP_INTERP_NONE); ndspChnSetFormat(CLICK_CH, NDSP_FORMAT_MONO_PCM16); ndspChnSetRate(CLICK_CH, DSPRATE);
+	float mix[12] = {0}; mix[0] = mix[1] = 0.7f; ndspChnSetMix(CLICK_CH, mix);
+}
+static void clickFire(int down) {
+	if (!gAudioOK || !gClickLen) return;
+	ndspChnWaveBufClear(CLICK_CH);
+	ndspWaveBuf* wb = &gClickWB[gClickI ^= 1];
+	memset(wb, 0, sizeof(*wb));
+	wb->data_pcm16 = gClickSmp[down ? 1 : 0]; wb->nsamples = gClickLen; wb->status = NDSP_WBUF_DONE;
+	ndspChnWaveBufAdd(CLICK_CH, wb);
+}
+
+static void clearStep(Track* tr, int s) { tr->on[s] = 0; tr->acc[s] = 0; tr->prob[s] = 0; tr->sub[s] = 1; tr->vel[s] = 7; tr->nud[s] = 0; }
+static void clearTrack(Track* tr) { for (int s = 0; s < NS; s++) clearStep(tr, s); }
+
+static void recordHit(int t, int lvl) {
 	Track* tr = &gPat[gCur].t[t];
-	int len = tr->len ? tr->len : 16, p = target % len;
-	tr->on[p] = 1; tr->prob[p] = 0;
+	int len = tr->len ? tr->len : 16, target, nd = 0;
+	if (gTick < 0) target = 0;   // during the count-in: the first step
+	else {
+		float el = gStepLen - gStepCd;   // samples since the current step began
+		float off;
+		if (el < gStepLen * 0.5f) { target = gTick; off = el / gStepLen; } else { target = gTick + 1; off = -gStepCd / gStepLen; }
+		if (!gQuant) { nd = (int)roundf(off * 12); if (nd > 6) nd = 6; if (nd < -6) nd = -6; }
+	}
+	int p = target % len;
+	tr->on[p] = 1; tr->prob[p] = 0; tr->acc[p] = 0; tr->vel[p] = lvl >= 0 ? lvl : gTapVel; tr->nud[p] = nd;
 	int r = idx(gMp[M_ROLL], 5);
 	tr->sub[p] = gRollT == t ? ROLL_SUB[r] : 1;
+	if (target > gTick && nd >= 0) gSkip[t] = p + 1;
 }
-static void hit(int t, float vel, int rec) {
+static void hit(int t, float vel, int rec, int lvl) {
 	fire(t, vel);
-	if (rec && gPlaying) recordHit(t);
+	if (rec && gPlaying) recordHit(t, lvl);
 }
+static int probPass(const Track* tr, int s) {
+	static const float PR[4] = {1.0f, 0.75f, 0.5f, 0.25f};
+	if (!tr->prob[s]) return 1;
+	gRng = gRng * 1664525u + 1013904223u;
+	return (gRng >> 8) * (1.0f / 16777216.0f) < PR[tr->prob[s] & 3];
+}
+static void sched(int t, float delay, float vel, int sub) {
+	Pend* p = gPend[t][0].on ? &gPend[t][1] : &gPend[t][0];
+	p->cd = delay; p->vel = vel; p->sub = (u8)sub; p->on = 1;
+}
+static int nextUsed(int p) { for (int i = 1; i <= NPAT; i++) { int q = (p + i) % NPAT; if (patUsed(q)) return q; } return p; }
 
 static void doStep(void) {
 	int tick = gNextTick++;
 	float spb = spbNow(), sw = gMp[M_SWING] * 0.5f;
 	gStepLen = spb * ((tick & 1) ? 1 - sw : 1 + sw);
-	if (tick % 16 == 0 && gQueued != gCur) gCur = gQueued;
+	if (tick > 0 && tick % 16 == 0 && gChain && gQueued == gCur) gQueued = nextUsed(gCur);   // CHAIN: play the used patterns in turn
+	if (tick >= 0 && tick % 16 == 0 && gQueued != gCur) gCur = gQueued;
 	Pattern* p = &gPat[gCur];
+	int beat = ((tick % 4) + 4) % 4 == 0, bar = ((tick % 16) + 16) % 16 == 0;
+	if (beat && (gClick || tick < 0)) clickFire(bar);
+	gCounting = tick < 0 ? (-tick + 3) / 4 : 0;
 	for (int t = 0; t < NT; t++) {
 		Track* tr = &p->t[t];
-		int len = tr->len ? tr->len : 16, pos = tick % len;
-		gPos[t] = pos;
-		if (!tr->on[pos] || gMute[t]) continue;
-		static const float PR[4] = {1.0f, 0.75f, 0.5f, 0.25f};
-		if (tr->prob[pos] && (gRng = gRng * 1664525u + 1013904223u, (gRng >> 8) * (1.0f / 16777216.0f)) >= PR[tr->prob[pos] & 3]) continue;
-		float v = tr->acc[pos] ? 1.0f : velN();
-		fire(t, v);
-		int r = tr->sub[pos];
-		if (r > 1) { gSubLeft[t] = r - 1; gSubInt[t] = gStepLen / r; gSubCd[t] = gSubInt[t]; gSubVel[t] = v * 0.85f; }
-		else gSubLeft[t] = 0;
+		int len = tr->len ? tr->len : 16;
+		if (tick >= 0) {
+			int pos = tick % len;
+			gPos[t] = pos;
+			if (gEraseT == t && tr->on[pos]) clearStep(tr, pos);   // ERASE: hits vanish as the playhead passes
+			if (gSkip[t] == pos + 1) gSkip[t] = 0;
+			else if (tr->on[pos] && tr->nud[pos] >= 0 && !gMute[t] && probPass(tr, pos))
+				sched(t, gStepLen * tr->nud[pos] / 12.0f, stepGain(tr, pos), tr->sub[pos]);
+		}
+		if (tick + 1 >= 0) {   // the next step, if it's nudged early
+			int np = (tick + 1) % len;
+			if (tr->on[np] && tr->nud[np] < 0 && !gMute[t] && gEraseT != t && probPass(tr, np))
+				sched(t, gStepLen * (1 + tr->nud[np] / 12.0f), stepGain(tr, np), tr->sub[np]);
+		}
 	}
-	if (tick % 4 == 0) gBeat = tick % 16 == 0 ? 2 : 1;
+	if (tick >= 0 && beat) gBeat = bar ? 2 : 1;
 	gTick = tick;
 	gStepCd += gStepLen;
 }
 
+static void seqStopAll(void) { for (int t = 0; t < NT; t++) { gSubLeft[t] = 0; gPend[t][0].on = gPend[t][1].on = 0; gSkip[t] = 0; gPos[t] = -1; } }
+
 static void seqTick(void* data) {
 	(void)data;
 	const float F = 160;
-	while (gTapR != gTapW) { TapEv e = gTapQ[gTapR]; gTapR = (gTapR + 1) % TQ; hit(e.t, e.vel, e.rec); }
+	while (gTapR != gTapW) { TapEv e = gTapQ[gTapR]; gTapR = (gTapR + 1) % TQ; hit(e.t, e.vel, e.rec, e.lvl); }
 	int rt = gRollT;
 	if (rt >= 0) {
 		gRollCd -= F;
-		if (gRollCd <= 0) { hit(rt, velN(), gModeTap); gRollCd += spbNow() * ROLL_STEPS[idx(gMp[M_ROLL], 5)]; if (gRollCd < F) gRollCd = F; }
+		if (gRollCd <= 0) { hit(rt, tapGain(), gModeTap, -1); gRollCd += spbNow() * ROLL_STEPS[idx(gMp[M_ROLL], 5)]; if (gRollCd < F) gRollCd = F; }
 	}
-	if (gPlayReq == 1) { gPlayReq = 0; gPlaying = 1; gNextTick = 0; gStepCd = 0; gTick = -1; }
-	if (gPlayReq == 2) { gPlayReq = 0; gPlaying = 0; for (int t = 0; t < NT; t++) gSubLeft[t] = 0; }
+	if (gPlayReq == 1) { gPlayReq = 0; seqStopAll(); gPlaying = 1; gNextTick = gCountIn ? -16 : 0; gStepCd = 0; gTick = -17; }
+	if (gPlayReq == 2) { gPlayReq = 0; gPlaying = 0; gCounting = 0; seqStopAll(); }
 	if (!gPlaying) return;
-	if (gSnap >= 0) { int s = gSnap; gSnap = -1; gNextTick = gNextTick - (gNextTick % 16) + s; gStepCd = 0; }
+	if (gSnap >= 0) { int s = gSnap; gSnap = -1; if (gNextTick >= 0) { gNextTick = gNextTick - (gNextTick % 16) + s; gStepCd = 0; } }
 	gStepCd -= F;
 	int guard = 0;
 	while (gStepCd <= 0 && guard++ < 4) doStep();
-	for (int t = 0; t < NT; t++)
+	for (int t = 0; t < NT; t++) {
+		for (int k = 0; k < 2; k++) {
+			Pend* p = &gPend[t][k];
+			if (!p->on || (p->cd -= F) > 0) continue;
+			p->on = 0;
+			fire(t, p->vel);
+			if (p->sub > 1) { gSubLeft[t] = p->sub - 1; gSubInt[t] = gStepLen / p->sub; gSubCd[t] = gSubInt[t] + p->cd; gSubVel[t] = p->vel * 0.85f; }
+			else gSubLeft[t] = 0;
+		}
 		if (gSubLeft[t] > 0 && (gSubCd[t] -= F) <= 0) { fire(t, gSubVel[t]); gSubLeft[t]--; gSubCd[t] += gSubInt[t]; }
+	}
 }
 
-static void tapPush(int t, float vel, int rec) {
+static void tapPushL(int t, float vel, int rec, int lvl) {
 	int n = (gTapW + 1) % TQ; if (n == gTapR) return;
-	gTapQ[gTapW].t = t; gTapQ[gTapW].vel = vel; gTapQ[gTapW].rec = rec;
+	gTapQ[gTapW].t = t; gTapQ[gTapW].vel = vel; gTapQ[gTapW].rec = rec; gTapQ[gTapW].lvl = lvl;
 	__sync_synchronize(); gTapW = n;
 }
+static void tapPush(int t, float vel, int rec) { tapPushL(t, vel, rec, -1); }
 static void rollStart(int t) {
 	int r = idx(gMp[M_ROLL], 5); if (!r) return;
 	gRollCd = spbNow() * ROLL_STEPS[r]; gRollT = t;
+}
+
+// undo / redo for clear, erase, copy, random, shift (PICO's EDIT + OCT-)
+static Pattern gUndo; static int gUndoP = -1;
+static void undoKeep(int p) { gUndo = gPat[p]; gUndoP = p; }
+static void undoDo(void) {
+	if (gUndoP < 0) { say("NOTHING TO UNDO"); return; }
+	Pattern t = gPat[gUndoP]; gPat[gUndoP] = gUndo; gUndo = t;
+	say("UNDONE (AGAIN: REDO)");
+}
+static void shiftTrack(int t, int dir) {
+	undoKeep(gCur);
+	Track* tr = &gPat[gCur].t[t]; Track o = *tr;
+	int len = tr->len ? tr->len : 16;
+	for (int s = 0; s < len; s++) {
+		int d = (s + dir + len) % len;
+		tr->on[d] = o.on[s]; tr->acc[d] = o.acc[s]; tr->prob[d] = o.prob[s]; tr->sub[d] = o.sub[s]; tr->vel[d] = o.vel[s]; tr->nud[d] = o.nud[s];
+	}
+}
+static u64 gTapTimes[4]; static int gTapN = 0;
+static void tapTempo(void) {
+	u64 now = osGetTime();
+	if (gTapN && now - gTapTimes[(gTapN - 1) % 4] > 2000) gTapN = 0;
+	gTapTimes[gTapN % 4] = now; gTapN++;
+	if (gTapN >= 2) {
+		int k = gTapN < 4 ? gTapN : 4;
+		float iv = (now - gTapTimes[(gTapN - k) % 4]) / (float)(k - 1), bpm = 60000.0f / iv;
+		if (bpm < 60) bpm = 60;
+		if (bpm > 200) bpm = 200;
+		gMp[M_BPM] = (roundf(bpm) - 60) / 140.0f;
+	}
 }
 
 // ---------------------------------------------------------------- sensors, beat light (as in Syrup)
@@ -584,8 +693,43 @@ static void beatLight(float dt) {
 	if (gLcdFlash && (gLightT -= dt) <= 0) { GSPLCD_SetBrightness(GSPLCD_SCREEN_TOP, gBrightTop); GSPLCD_SetBrightness(GSPLCD_SCREEN_BOTTOM, gBrightBot); gLcdFlash = 0; }
 }
 
+// mic velocity: PADS reads how hard a pad was hit from the tap sound; TAP MIC plays the selected track
+// when you tap on the console near the mic (louder tap, higher velocity). Auto-scales to the loudest tap.
+static float gMicRecT;
+static int gMicVel = 0; static float gMicMax = 4000;
+static const char* MICVEL_NAMES[3] = {"OFF", "PADS", "TAP MIC"};
+static int micPeak(int ms) {
+	if (!gMicOK) return 0;
+	u32 N = gMicSize / 2, end = micGetLastSampleOffset() / 2; int k = (int)(MICRATE * ms / 1000), pk = 0;
+	const s16* m = (const s16*)gMicBuf;
+	for (int i = 0; i < k; i++) { int v = abs(m[(end + N - 1 - i) % N]); if (v > pk) pk = v; }
+	return pk;
+}
+static int micLevel(int pk) {
+	if (pk > gMicMax) gMicMax = pk;
+	int l = (int)(sqrtf(pk / gMicMax) * 8.0f);
+	return l < 0 ? 0 : l > 7 ? 7 : l;
+}
+static void padHit(int t) {   // a touched pad: pad velocity, or the tap's loudness with MIC VELOCITY on PADS
+	int l = gMicVel == 1 && gMicOK ? micLevel(micPeak(50)) : gTapVel;
+	tapPushL(t, VEL_G[l] * velN(), 1, l);
+}
+static void micVelTick(float dt) {
+	gMicMax *= 1.0f - dt * 0.03f; if (gMicMax < 2500) gMicMax = 2500;
+	if (gMicVel != 2 || !gMicOK || gMicRecT > 0) return;
+	static float hold = 0, prev = 0;
+	int pk = micPeak(18);
+	hold -= dt;
+	if (hold <= 0 && pk > 1800 && pk > gMicMax * 0.12f && pk > prev * 1.8f) {
+		int l = micLevel(pk);
+		tapPushL(gSel, VEL_G[l] * velN(), gModeTap, l);
+		hold = 0.07f;
+	}
+	prev = pk;
+}
+
 // mic sampling: record 2 s into the selected track, trimmed to the first sound
-static float gMicRecT = 0; static int gMicRecTrack = 0;
+static int gMicRecTrack = 0;
 static void micRecStart(int t) { if (!gMicOK) { say("MIC NOT AVAILABLE"); return; } gMicRecT = 2.0f; gMicRecTrack = t; }
 static void micRecTick(float dt) {
 	if (gMicRecT <= 0) return;
@@ -687,7 +831,7 @@ static void setSteps(int p, int t, const char* s) {   // "x" = hit, "X" = accent
 }
 static void defaults(void) {
 	memset(gPat, 0, sizeof(gPat));
-	for (int p = 0; p < NPAT; p++) for (int t = 0; t < NT; t++) { gPat[p].t[t].len = 16; for (int s = 0; s < NS; s++) gPat[p].t[t].sub[s] = 1; }
+	for (int p = 0; p < NPAT; p++) for (int t = 0; t < NT; t++) { gPat[p].t[t].len = 16; clearTrack(&gPat[p].t[t]); }
 	static const float PAN[NT] = {.5f, .5f, .3f, .5f, .7f, .4f, .55f, .62f, .62f, .4f, .65f, .35f, .5f, .5f, .6f, .45f};
 	for (int t = 0; t < NT; t++) {
 		float* k = gKp[t];
@@ -700,7 +844,7 @@ static void defaults(void) {
 	// A: house
 	setSteps(0, B9, "X...x...X...x..."); setSteps(0, CP, "....x.......x..."); setSteps(0, CH, "x.x.x.x.x.x.x.x."); setSteps(0, OH, "..x...x...x...x.");
 	// B: 808 boom bap
-	setSteps(1, BD, "X......x..x....."); setSteps(1, SD, "....X.......X..."); setSteps(1, CH, "x.x.x.x.x.x.x.xx"); setSteps(1, RS, ".......x......x.");
+	setSteps(1, BD, "X......x..x....."); for (int i = 1; i < NS; i += 2) gPat[1].t[CH].vel[i] = 3; setSteps(1, SD, "....X.......X..."); setSteps(1, CH, "x.x.x.x.x.x.x.xx"); gPat[1].t[CH].vel[15] = 3; gPat[1].t[SD].nud[12] = 2; setSteps(1, RS, ".......x......x.");
 	// C: electro
 	setSteps(2, BD, "X.....x...x....."); setSteps(2, SD, "....X.......X..."); setSteps(2, CH, "xxXxxxXxxxXxxxXx"); setSteps(2, CB, "..x.....x..x....");
 	setSteps(2, CP, "............x...");
@@ -711,16 +855,28 @@ static void defaults(void) {
 static void save(void) {
 	mkdir("sdmc:/3ds", 0777); mkdir("sdmc:/3ds/ds1000", 0777);
 	FILE* f = fopen(SAVEPATH, "wb"); if (!f) { say("COULD NOT SAVE"); return; }
-	u32 hdr[2] = {0x4B315344, 1};
+	u32 hdr[2] = {0x4B315344, 2};
+	s32 opt[8] = {gQuant, gClick, gCountIn, gChain, gTapVel, gMicVel, 0, 0};
 	fwrite(hdr, 4, 2, f); fwrite(gPat, sizeof(gPat), 1, f); fwrite(gKp, sizeof(gKp), 1, f); fwrite(gMp, sizeof(gMp), 1, f); fwrite(gMute, sizeof(gMute), 1, f);
+	fwrite(opt, sizeof(opt), 1, f);
 	for (int t = 0; t < NT; t++) { s32 n = gMicSmp[t] ? gMicLen[t] : 0; fwrite(&n, 4, 1, f); if (n) fwrite(gMicSmp[t], 2, n, f); }
 	fclose(f); say("SAVED TO /3ds/ds1000/");
 }
 static void load(void) {
 	FILE* f = fopen(SAVEPATH, "rb"); if (!f) return;
 	u32 hdr[2] = {0};
-	if (fread(hdr, 4, 2, f) == 2 && hdr[0] == 0x4B315344 && hdr[1] == 1 &&
-		fread(gPat, sizeof(gPat), 1, f) == 1 && fread(gKp, sizeof(gKp), 1, f) == 1 && fread(gMp, sizeof(gMp), 1, f) == 1 && fread(gMute, sizeof(gMute), 1, f) == 1) {
+	int ok = fread(hdr, 4, 2, f) == 2 && hdr[0] == 0x4B315344 && (hdr[1] == 1 || hdr[1] == 2);
+	if (ok && hdr[1] == 1) {   // version 1: no velocity / nudge
+		static TrackV1 old[NPAT][NT];
+		ok = fread(old, sizeof(old), 1, f) == 1;
+		if (ok) for (int p = 0; p < NPAT; p++) for (int t = 0; t < NT; t++) {
+			Track* tr = &gPat[p].t[t]; clearTrack(tr);
+			memcpy(tr->on, old[p][t].on, NS); memcpy(tr->acc, old[p][t].acc, NS); memcpy(tr->prob, old[p][t].prob, NS); memcpy(tr->sub, old[p][t].sub, NS); tr->len = old[p][t].len;
+		}
+	} else if (ok) ok = fread(gPat, sizeof(gPat), 1, f) == 1;
+	if (ok) ok = fread(gKp, sizeof(gKp), 1, f) == 1 && fread(gMp, sizeof(gMp), 1, f) == 1 && fread(gMute, sizeof(gMute), 1, f) == 1;
+	if (ok && hdr[1] == 2) { s32 opt[8]; ok = fread(opt, sizeof(opt), 1, f) == 1; if (ok) { gQuant = opt[0]; gClick = opt[1]; gCountIn = opt[2]; gChain = opt[3]; gTapVel = opt[4] & 7; gMicVel = opt[5] >= 0 && opt[5] < 3 ? opt[5] : 0; } }
+	if (ok) {
 		for (int t = 0; t < NT; t++) {
 			s32 n = 0; if (fread(&n, 4, 1, f) != 1 || n < 0 || n > 200000) break;
 			if (n) { gMicSmp[t] = (s16*)malloc(n * 2); if (!gMicSmp[t] || fread(gMicSmp[t], 2, n, f) != (size_t)n) { free(gMicSmp[t]); gMicSmp[t] = NULL; break; } gMicLen[t] = n; }
@@ -731,6 +887,7 @@ static void load(void) {
 }
 static int patUsed(int p) { for (int t = 0; t < NT; t++) for (int s = 0; s < NS; s++) if (gPat[p].t[t].on[s]) return 1; return 0; }
 static void randomTrack(int t) {
+	undoKeep(gCur);
 	Track* tr = &gPat[gCur].t[t];
 	int busy = t == CH || t == MA || t == RC || t == CB;
 	for (int s = 0; s < NS; s++) {
@@ -739,7 +896,8 @@ static void randomTrack(int t) {
 		if (t == SD || t == S9 || t == CP) p = (s % 8 == 4) ? 0.9f : 0.08f;
 		gRng = gRng * 1664525u + 1013904223u;
 		tr->on[s] = ((gRng >> 8) & 0xFFFF) / 65536.0f < p;
-		tr->acc[s] = tr->on[s] && s % 4 == 0; tr->prob[s] = 0; tr->sub[s] = 1;
+		tr->acc[s] = tr->on[s] && s % 4 == 0; tr->prob[s] = 0; tr->sub[s] = 1; tr->nud[s] = 0;
+		tr->vel[s] = busy && s % 2 ? 3 + (gRng >> 28) % 4 : 7;
 	}
 }
 
@@ -755,11 +913,13 @@ static void txt(float x, float y, float sc, u32 c, int center, const char* s) {
 static const u32 GRP[4][2] = {{0xFF2030E0, 0xFF0A0C48}, {0xFF1880F0, 0xFF082848}, {0xFF20D0F0, 0xFF083848}, {0xFFD0E8F0, 0xFF404448}};   // ABGR: red, orange, yellow, cream
 static u32 trackCol(int t) { static const u32 C[4] = {0xFF2848F0, 0xFF2090F8, 0xFF30D8F8, 0xFFD8E8F0}; return C[(t / 4) & 3]; }
 
-enum { MD_STEP, MD_ACC, MD_PROB, MD_SUB, MD_TAP, MD_MUTE };
-static const char* MODE_NAMES[6] = {"STEP", "ACC", "PROB", "SUB", "TAP", "MUTE"};
-enum { PG_TRK, PG_FLT, PG_MST, PG_HW };
-static const char* PAGE_NAMES[4] = {"TRK", "FLT", "MST", "HW"};
-static int gSel = 0, gMode = MD_STEP, gPage = PG_TRK, gDrag = -1;
+enum { MD_STEP, MD_ACC, MD_PROB, MD_SUB, MD_TAP, MD_ERASE, MD_MUTE, NMODES };
+static const char* MODE_NAMES[NMODES] = {"STEP", "ACC", "PROB", "SUB", "TAP", "ERASE", "MUTE"};
+enum { PG_TRK, PG_FLT, PG_MST, PG_SEQ, PG_HW, NPAGES };
+static const char* PAGE_NAMES[NPAGES] = {"TRK", "FLT", "MST", "SEQ", "HW"};
+static int gMode = MD_STEP, gPage = PG_TRK, gDrag = -1, gStepSel = 0;
+static int padMode(void) { return gMode == MD_TAP || gMode == MD_ERASE; }
+static int btnPage(void) { return gPage == PG_SEQ || gPage == PG_HW; }
 
 static const char* SL_TRK[8] = {"TUNE", "DECAY", "TONE", "LEVEL", "PAN", "DELAY", "DRIVE", "LAST"};
 static const int SL_TRK_P[8] = {P_TUNE, P_DECAY, P_TONE, P_LEVEL, P_PAN, P_DLY, P_DRIVE, P_LASTX};
@@ -812,27 +972,53 @@ static void slText(int i, char* o, int n) {
 	snprintf(o, n, "%d", (int)(v * 100 + 0.5f));
 }
 
-static const char* HW_LABEL[8] = {"MIC SAMPLE", "MOTION", "BEAT LIGHT", "LINK", "OUTPUT", "TILT CENTER", "SAVE", "CLEAR PATTERN"};
+static const char* HW_LABEL[8] = {"MIC SAMPLE", "MOTION", "BEAT LIGHT", "LINK", "OUTPUT", "MIC VELOCITY", "SAVE", "CLEAR PATTERN"};
+static const char* SEQ_LABEL[8] = {"QUANTIZE", "CLICK", "COUNT-IN", "CHAIN", "TAP TEMPO", "UNDO", "SHIFT <", "SHIFT >"};
 static void hwText(int i, char* o, int n) {
+	if (gPage == PG_SEQ) {
+		switch (i) {
+		case 0: snprintf(o, n, gQuant ? "ON" : "OFF (FEEL)"); return;
+		case 1: snprintf(o, n, gClick ? "ON" : "OFF"); return;
+		case 2: snprintf(o, n, gCountIn ? "1 BAR" : "OFF"); return;
+		case 3: snprintf(o, n, gChain ? "ON" : "OFF"); return;
+		case 4: snprintf(o, n, "%d", (int)bpmOf()); return;
+		case 6: case 7: snprintf(o, n, "%s", TN[gSel]); return;
+		default: o[0] = 0; return;
+		}
+	}
 	switch (i) {
 	case 0: snprintf(o, n, gMicRecT > 0 ? "REC..." : "-> %s", TN[gSel]); return;
 	case 1: snprintf(o, n, gMotion ? "ON" : "OFF"); return;
 	case 2: snprintf(o, n, gBeatLight ? "ON" : "OFF"); return;
 	case 3: snprintf(o, n, "%s", LINK_NAMES[gLink]); return;
 	case 4: snprintf(o, n, "%s", OUT_NAMES[gOutMode]); return;
+	case 5: snprintf(o, n, "%s", MICVEL_NAMES[gMicVel]); return;
 	default: o[0] = 0;
 	}
 }
 static void hwPress(int i) {
+	if (gPage == PG_SEQ) {
+		switch (i) {
+		case 0: gQuant = !gQuant; say(gQuant ? "LIVE HITS SNAP TO THE STEPS" : "LIVE HITS KEEP THEIR FEEL (STORED AS NUDGE)"); break;
+		case 1: gClick = !gClick; break;
+		case 2: gCountIn = !gCountIn; break;
+		case 3: gChain = !gChain; say(gChain ? "CHAIN: PLAYS THE USED PATTERNS IN TURN" : "CHAIN OFF"); break;
+		case 4: tapTempo(); break;
+		case 5: undoDo(); break;
+		case 6: shiftTrack(gSel, -1); break;
+		case 7: shiftTrack(gSel, 1); break;
+		}
+		return;
+	}
 	switch (i) {
 	case 0: micRecStart(gSel); break;
 	case 1: gMotion = !gMotion; gTiltCal = 0; say(gMotion ? "TILT: FILTER / DELAY  TWIST: PITCH  SHAKE: ROLL" : "MOTION OFF"); break;
 	case 2: gBeatLight = !gBeatLight; break;
 	case 3: linkSet((gLink + 1) % 5); break;
 	case 4: gOutMode = (gOutMode + 1) % 3; outputApply(); break;
-	case 5: gTiltCal = 0; say("TILT CENTERED"); break;
+	case 5: gMicVel = (gMicVel + 1) % 3; say(gMicVel == 1 ? "TAP PADS HARDER FOR LOUDER HITS" : gMicVel == 2 ? "TAP NEAR THE MIC TO PLAY THE TRACK (HEADPHONES HELP)" : "MIC VELOCITY OFF"); if (gMicVel && !gMicOK) say("MIC NOT AVAILABLE"); break;
 	case 6: save(); break;
-	case 7: { Pattern* p = &gPat[gCur]; for (int t = 0; t < NT; t++) { memset(p->t[t].on, 0, NS); memset(p->t[t].acc, 0, NS); memset(p->t[t].prob, 0, NS); memset(p->t[t].sub, 1, NS); } say("PATTERN CLEARED"); } break;
+	case 7: { undoKeep(gCur); Pattern* p = &gPat[gCur]; for (int t = 0; t < NT; t++) clearTrack(&p->t[t]); say("PATTERN CLEARED (UNDO ON SEQ PAGE)"); } break;
 	}
 }
 
@@ -872,20 +1058,26 @@ static void drawTop(void) {
 			else if (tr->on[s]) c = tr->acc[s] ? RGB(255, 255, 255) : trackCol(t);
 			else c = GRP[s / 4][1];
 			if (gMute[t] && tr->on[s] && s < len) c = RGB(90, 70, 70);
-			rect(x, y, 20.5f, 8.5f, c);
+			if (s < len && tr->on[s]) {   // velocity = how full the cell is lit, nudge = how far it's shifted
+				rect(x, y, 20.5f, 8.5f, GRP[s / 4][1]);
+				float h = 2.5f + 6.0f * (tr->vel[s] & 7) / 7.0f;
+				rect(x + tr->nud[s] * 1.6f, y + 8.5f - h, 20.5f, h, c);
+			} else rect(x, y, 20.5f, 8.5f, c);
 			if (s < len && tr->on[s] && tr->sub[s] > 1) rect(x + 15, y + 1, 4, 6, RGB(30, 30, 30));
 			if (s < len && tr->on[s] && tr->prob[s]) rect(x + 1, y + 6, 6, 2, RGB(30, 30, 30));
 			if (gPlaying && s == gPos[t]) frame(x - 1, y - 1, 22.5f, 10.5f, RGB(255, 255, 255));
 		}
 	}
+	if (gCounting) { rect(150, 90, 100, 60, RGB(240, 120, 30)); snprintf(b, sizeof(b), "%d", gCounting); txt(200, 92, 1.6f, RGB(20, 20, 20), 1, b); }
 	// footer
 	rect(0, 211, 400, 29, RGB(40, 40, 46));
-	snprintf(b, sizeof(b), "%s %s   %s / %s", TN[gSel], TLONG[gSel], MODE_NAMES[gMode], PAGE_NAMES[gPage]);
+	if (padMode()) snprintf(b, sizeof(b), "%s %s  %s  PAD VEL %d/8", TN[gSel], TLONG[gSel], MODE_NAMES[gMode], gTapVel + 1);
+	else { Track* st = &gPat[gCur].t[gSel]; snprintf(b, sizeof(b), "%s %s  STEP %d%s  VEL %d/8  NUDGE %+d", TN[gSel], TLONG[gSel], gStepSel + 1, st->on[gStepSel] ? "" : " (OFF)", (st->vel[gStepSel] & 7) + 1, st->nud[gStepSel]); }
 	txt(6, 212, 0.42f, RGB(240, 120, 30), 0, b);
 	if (gMsgT > 0) txt(6, 225, 0.4f, RGB(255, 230, 120), 0, gMsg);
 	else {
-		snprintf(b, sizeof(b), "%s%s%s%s", gLinkUp ? LINK_NAMES[gLink] : "", gLinkUp && gLink == 1 ? (gLinkPeers ? " +1" : " (WAITING)") : "",
-			gMotion ? "  MOTION" : "", gAudioOK ? ((gBusOK && !gBusFail) ? "" : "  FX BUS OFF") : "  NO DSP: RUN DSP1 ONCE");
+		snprintf(b, sizeof(b), "%s%s%s%s%s", gLinkUp ? LINK_NAMES[gLink] : "", gLinkUp && gLink == 1 ? (gLinkPeers ? " +1" : " (WAITING)") : "",
+			gMotion ? "  MOTION" : "", gMicVel == 1 ? "  MIC VEL: PADS" : gMicVel == 2 ? "  MIC VEL: TAP MIC" : "", gAudioOK ? ((gBusOK && !gBusFail) ? "" : "  FX BUS OFF") : "  NO DSP: RUN DSP1 ONCE");
 		txt(6, 225, 0.4f, RGB(150, 200, 255), 0, b);
 	}
 	snprintf(b, sizeof(b), "v%s", DS_VER); txt(360, 214, 0.34f, RGB(100, 100, 110), 0, b);
@@ -908,9 +1100,9 @@ static void drawBottom(void) {
 	int len = tr->len ? tr->len : 16;
 	for (int s = 0; s < NS; s++) {
 		float x = (s % 8) * 40, y = 50 + (s / 8) * 40;
-		if (gMode == MD_TAP) {   // 16 pads, one per instrument
+		if (padMode()) {   // 16 pads, one per instrument
 			float fl = gFlash[s];
-			u32 c = s == gSel ? RGB(240, 120, 30) : RGB(60 + (int)(fl * 160), 60 + (int)(fl * 140), 70 + (int)(fl * 120));
+			u32 c = gMode == MD_ERASE && gEraseT == s ? RGB(255, 60, 60) : s == gSel ? RGB(240, 120, 30) : gMode == MD_ERASE ? RGB(90 + (int)(fl * 120), 40 + (int)(fl * 120), 44 + (int)(fl * 120)) : RGB(60 + (int)(fl * 160), 60 + (int)(fl * 140), 70 + (int)(fl * 120));
 			rect(x + 2, y + 2, 36, 36, c);
 			txt(x + 20, y + 12, 0.48f, s == gSel ? RGB(20, 20, 20) : RGB(240, 240, 240), 1, TN[s]);
 			continue;
@@ -921,23 +1113,29 @@ static void drawBottom(void) {
 		if (on && tr->acc[s]) { rect(x + 4, y + 4, 32, 5, RGB(255, 255, 255)); }
 		if (on && tr->prob[s]) { static const char* PN[4] = {"", "75%", "50%", "25%"}; txt(x + 20, y + 13, 0.42f, RGB(20, 20, 20), 1, PN[tr->prob[s] & 3]); }
 		if (on && tr->sub[s] > 1) { snprintf(b, sizeof(b), "x%d", tr->sub[s]); txt(x + 20, y + 24, 0.42f, RGB(20, 20, 20), 1, b); }
+		if (on) {
+			float h = 4.0f * ((tr->vel[s] & 7) + 1);
+			rect(x + 31, y + 36 - h, 5, h, RGB(20, 20, 20));
+			if (tr->nud[s]) { rect(x + 18 + tr->nud[s] * 2.6f, y + 33, 4, 4, RGB(20, 20, 20)); }
+		}
 		snprintf(b, sizeof(b), "%d", s + 1); txt(x + 6, y + 26, 0.32f, on ? RGB(40, 40, 40) : RGB(120, 120, 120), 0, b);
+		if (s == gStepSel) { frame(x, y, 40, 40, RGB(255, 140, 40)); frame(x + 1, y + 1, 38, 38, RGB(255, 140, 40)); }
 		if (gPlaying && s == gPos[gSel]) frame(x + 1, y + 1, 38, 38, RGB(255, 255, 255));
 	}
 	// tabs
-	for (int i = 0; i < 7; i++) {
-		float x = i * (320.0f / 7), w = 320.0f / 7 - 2;
-		int act = i < 6 ? gMode == i : 0;
-		rect(x + 1, 132, w, 22, i == 6 ? RGB(70, 70, 120) : act ? RGB(240, 120, 30) : RGB(52, 52, 58));
-		if (i < 6) txt(x + w / 2 + 1, 135, 0.42f, act ? RGB(20, 20, 20) : RGB(220, 220, 220), 1, MODE_NAMES[i]);
+	for (int i = 0; i <= NMODES; i++) {
+		float x = i * 40.0f, w = 38;
+		int act = i < NMODES ? gMode == i : 0;
+		rect(x + 1, 132, w, 22, i == NMODES ? RGB(70, 70, 120) : act ? RGB(240, 120, 30) : RGB(52, 52, 58));
+		if (i < NMODES) txt(x + w / 2 + 1, 136, 0.36f, act ? RGB(20, 20, 20) : RGB(220, 220, 220), 1, MODE_NAMES[i]);
 		else { snprintf(b, sizeof(b), "%s >", PAGE_NAMES[gPage]); txt(x + w / 2 + 1, 135, 0.42f, RGB(230, 230, 255), 1, b); }
 	}
 	// sliders / buttons
 	for (int i = 0; i < 8; i++) {
 		float x = (i % 2) * 160, y = 158 + (i / 2) * 20.5f;
 		rect(x + 1, y, 158, 19, RGB(36, 36, 42));
-		if (gPage == PG_HW) {
-			txt(x + 5, y + 3, 0.4f, RGB(210, 210, 210), 0, HW_LABEL[i]);
+		if (btnPage()) {
+			txt(x + 5, y + 3, 0.4f, RGB(210, 210, 210), 0, gPage == PG_SEQ ? SEQ_LABEL[i] : HW_LABEL[i]);
 			hwText(i, b, sizeof(b)); txt(x + 120, y + 3, 0.4f, RGB(240, 160, 60), 1, b);
 			continue;
 		}
@@ -974,6 +1172,7 @@ int main(void) {
 			filtApply(t);
 		}
 		busInit();
+		clickInit();
 		ndspSetCallback(seqTick, NULL);
 	}
 
@@ -996,8 +1195,8 @@ int main(void) {
 		u32 kd = hidKeysDown(), kh = hidKeysHeld(), kr = hidKeysDownRepeat();
 		if (kd & KEY_START) { save(); break; }
 		if (kd & KEY_A) gPlayReq = gPlaying ? 2 : 1;
-		if (kd & KEY_B) tapPush(gSel, velN(), 0);
-		if (kd & KEY_X) { Track* tr = &gPat[gCur].t[gSel]; memset(tr->on, 0, NS); memset(tr->acc, 0, NS); memset(tr->prob, 0, NS); memset(tr->sub, 1, NS); say("TRACK CLEARED"); }
+		if (kd & KEY_B) tapPush(gSel, padMode() ? tapGain() : velN(), 0);
+		if (kd & KEY_X) { undoKeep(gCur); clearTrack(&gPat[gCur].t[gSel]); say("TRACK CLEARED (UNDO ON SEQ PAGE)"); }
 		if (kd & KEY_Y) { randomTrack(gSel); say("TRACK RANDOMIZED"); }
 		if (kr & KEY_DUP) gSel = (gSel + NT - 1) % NT;
 		if (kr & KEY_DDOWN) gSel = (gSel + 1) % NT;
@@ -1008,10 +1207,23 @@ int main(void) {
 			gQueued = q; if (!gPlaying) gCur = q;
 		}
 		if (kd & KEY_SELECT) {
-			int n = (gCur + 1) % NPAT; gPat[n] = gPat[gCur]; gQueued = n; if (!gPlaying) gCur = n;
+			int n = (gCur + 1) % NPAT; undoKeep(n); gPat[n] = gPat[gCur]; gQueued = n; if (!gPlaying) gCur = n;
 			char m[40]; snprintf(m, sizeof(m), "COPIED %c TO %c", 'A' + gCur, 'A' + n); say(m);
 		}
 		gModeTap = gMode == MD_TAP;
+		// circle pad: up/down velocity, left/right nudge (the selected step; on the pads, the pad velocity)
+		if (kr & (KEY_CPAD_UP | KEY_CPAD_DOWN | KEY_CPAD_LEFT | KEY_CPAD_RIGHT)) {
+			int dv = (kr & KEY_CPAD_UP) ? 1 : (kr & KEY_CPAD_DOWN) ? -1 : 0, dn = (kr & KEY_CPAD_RIGHT) ? 1 : (kr & KEY_CPAD_LEFT) ? -1 : 0;
+			if (padMode()) { gTapVel += dv; if (gTapVel < 0) gTapVel = 0; if (gTapVel > 7) gTapVel = 7; }
+			else {
+				Track* tr = &gPat[gCur].t[gSel]; int s = gStepSel;
+				if (!tr->on[s]) { tr->on[s] = 1; tr->vel[s] = 7; tr->nud[s] = 0; tr->sub[s] = 1; }
+				int v = (tr->vel[s] & 7) + dv, nd = tr->nud[s] + dn;
+				tr->vel[s] = v < 0 ? 0 : v > 7 ? 7 : v;
+				tr->nud[s] = nd < -6 ? -6 : nd > 6 ? 6 : nd;
+				if (dv && !gPlaying) tapPush(gSel, stepGain(tr, s), 0);   // hear the new velocity
+			}
+		}
 
 		touchPosition tp; hidTouchRead(&tp);
 		int tx = tp.px, ty = tp.py;
@@ -1019,39 +1231,42 @@ int main(void) {
 			if (ty < 48) {
 				int i = (ty / 24) * 8 + tx / 40; if (i > 15) i = 15;
 				if (gMode == MD_MUTE) gMute[i] = !gMute[i];
-				else { gSel = i; if (gMode == MD_TAP) { tapPush(i, velN(), 1); rollStart(i); } }
+				else if (gMode == MD_ERASE) { gSel = i; undoKeep(gCur); if (gPlaying) gEraseT = i; else { clearTrack(&gPat[gCur].t[i]); say("TRACK ERASED (UNDO ON SEQ PAGE)"); } }
+				else { gSel = i; if (gMode == MD_TAP) { padHit(i); rollStart(i); } }
 			} else if (ty >= 50 && ty < 130) {
 				int s = ((ty - 50) / 40) * 8 + tx / 40; if (s > 15) s = 15;
 				Track* tr = &gPat[gCur].t[gSel];
 				int len = tr->len ? tr->len : 16;
-				if (gMode == MD_TAP) { gSel = s; tapPush(s, velN(), 1); rollStart(s); }
+				if (gMode == MD_TAP) { gSel = s; padHit(s); rollStart(s); }
+				else if (gMode == MD_ERASE) { gSel = s; undoKeep(gCur); if (gPlaying) gEraseT = s; else { clearTrack(&gPat[gCur].t[s]); say("TRACK ERASED (UNDO ON SEQ PAGE)"); } }
 				else if (s < len) {
-					if (gMode == MD_STEP || gMode == MD_MUTE) { tr->on[s] = !tr->on[s]; if (!tr->on[s]) { tr->acc[s] = 0; tr->prob[s] = 0; tr->sub[s] = 1; } }
+					gStepSel = s;
+					if (gMode == MD_STEP || gMode == MD_MUTE) { if (tr->on[s]) clearStep(tr, s); else tr->on[s] = 1; }
 					else if (gMode == MD_ACC) { if (!tr->on[s]) { tr->on[s] = 1; tr->acc[s] = 1; } else tr->acc[s] = !tr->acc[s]; }
 					else if (gMode == MD_PROB && tr->on[s]) tr->prob[s] = (tr->prob[s] + 1) & 3;
 					else if (gMode == MD_SUB && tr->on[s]) tr->sub[s] = tr->sub[s] >= 4 ? 1 : tr->sub[s] + 1;
 				}
 			} else if (ty >= 132 && ty < 155) {
-				int i = tx * 7 / 320; if (i > 6) i = 6;
-				if (i < 6) gMode = i; else gPage = (gPage + 1) % 4;
+				int i = tx / 40; if (i > NMODES) i = NMODES;
+				if (i < NMODES) gMode = i; else gPage = (gPage + 1) % NPAGES;
 			} else if (ty >= 158) {
 				int i = ((ty - 158) / 20) * 2 + tx / 160; if (i > 7) i = 7;
-				if (gPage == PG_HW) hwPress(i);
+				if (btnPage()) hwPress(i);
 				else gDrag = i;
 			}
 		}
-		if ((kh & KEY_TOUCH) && gDrag >= 0 && gPage != PG_HW) {
+		if ((kh & KEY_TOUCH) && gDrag >= 0 && !btnPage()) {
 			float x0 = (gDrag % 2) * 160 + 56;
 			slSet(gDrag, (tx - x0) / 98.0f);
 		}
-		if (!(kh & KEY_TOUCH)) { gDrag = -1; if (!shakeRoll) gRollT = -1; }
+		if (!(kh & KEY_TOUCH)) { gDrag = -1; gEraseT = -1; if (!shakeRoll) gRollT = -1; }
 
 		sensorsUpdate(dt);
 		if (gMotion) {   // shake = note-repeat roll on the selected track
-			if (gShake > 0.35f && gRollT < 0) { shakeRoll = 1; tapPush(gSel, velN(), gModeTap); if (!idx(gMp[M_ROLL], 5)) gMp[M_ROLL] = 0.5f; rollStart(gSel); }
+			if (gShake > 0.35f && gRollT < 0) { shakeRoll = 1; tapPush(gSel, tapGain(), gModeTap); if (!idx(gMp[M_ROLL], 5)) gMp[M_ROLL] = 0.5f; rollStart(gSel); }
 			if (shakeRoll && gShake < 0.15f) { shakeRoll = 0; if (!(kh & KEY_TOUCH)) gRollT = -1; }
 		} else if (shakeRoll) { shakeRoll = 0; gRollT = -1; }
-		beatLight(dt); micRecTick(dt); linkTick(dt);
+		beatLight(dt); micRecTick(dt); micVelTick(dt); linkTick(dt);
 		if (gMsgT > 0) gMsgT -= dt;
 		for (int t = 0; t < NT; t++) gFlash[t] *= 0.85f;
 
