@@ -1,0 +1,124 @@
+#persample
+
+// ACID BASSLINE GENERATOR - 303-style lines for Drambo's Code module.
+// No arrays needed: every step is rebuilt from a hash of (step, Seed), so a Seed setting IS a pattern.
+// Turn Seed for a new line, Mutate to change some steps, everything else reshapes the same line.
+// Clock: a gate per 16th note (e.g. the track sequencer with all 16 steps on -> MIDI to CV gate).
+// Or turn FreeRun up to clock itself from Drambo's tempo. Reset (optional) restarts at step 1.
+// Outputs: PitchCV (raw Drambo CV, 0.125 per octave), Gate (held through slides), Velocity, Slide.
+
+clk = input(gate, Clock)
+rst = input(gate, Reset)
+pSeed = param(value, Seed)
+pMut = param(value, Mutate)
+pRoot = param(value, Root)
+pScale = param(value, Scale)
+pOct = param(value, Octave)
+pLen = param(value, Length)
+pDens = param(value, Density)
+pAcc = param(value, Accent)
+pSlide = param(value, Slide)
+pJump = param(value, Jumps)
+pGate = param(value, GateLen)
+pFree = param(value, FreeRun)
+
+if (init < 0.5) {
+    stepIdx = -1.0
+    since = sampleRate * 10.0
+    stepLen = sampleRate * 0.125
+    ph = 0.0
+    pitchOut = -0.125
+    velOut = 0.0
+    slideOut = 0.0
+    gTimer = 0.0
+    gapT = 0.0
+    curSlide = 0.0
+    init = 1.0
+}
+
+clkEdge = edge(clk > 0.5 ? 1.0 : 0.0)
+rstEdge = edge(rst > 0.5 ? 1.0 : 0.0)
+spb = sampleRate * 15.0 / max(tempo, 20.0)
+since = since + 1.0
+adv = 0.0
+
+// external clock: measure the step length, restart from step 1 after a pause
+if (clkEdge > 0.5) {
+    stepIdx = since > sampleRate ? -1.0 : stepIdx
+    stepLen = since < sampleRate ? since : spb
+    since = 0.0
+    adv = 1.0
+}
+
+// internal clock from tempo, only when FreeRun is up and no external clock is arriving
+freeOn = and(pFree > 0.5, since > sampleRate)
+if (freeOn > 0.5) {
+    ph = ph + 1.0 / spb
+    stepLen = spb
+}
+if (ph >= 1.0) {
+    ph = ph - 1.0
+    adv = freeOn
+}
+
+if (rstEdge > 0.5) {
+    stepIdx = -1.0
+    ph = 1.0
+}
+
+len = pLen < 0.34 ? 8.0 : (pLen < 0.67 ? 16.0 : 32.0)
+newNote = 0.0
+
+if (adv > 0.5) {
+    stepIdx = mod(stepIdx + 1.0, len)
+    s = stepIdx
+    seedQ = floor(pSeed * 63.0 + 0.5)
+    hm = fract(sin(s * 7.31 + seedQ * 3.17 + 0.5) * 43758.5453)
+    sd = hm < pMut * 0.999 ? seedQ + 101.0 : seedQ
+    h1 = fract(sin(s * 12.9898 + sd * 78.233) * 43758.5453)
+    h2 = fract(sin(s * 39.3468 + sd * 11.135) * 24634.6345)
+    h3 = fract(sin(s * 73.156 + sd * 52.235) * 37165.2715)
+    h4 = fract(sin(s * 26.651 + sd * 4.983) * 51842.8761)
+    h5 = fract(sin(s * 91.733 + sd * 17.411) * 29411.3317)
+    beat = mod(s, 4.0) < 0.5 ? 1.0 : 0.0
+    on = beat > 0.5 ? (h2 < 0.92 ? 1.0 : 0.0) : (h2 < pDens ? 1.0 : 0.0)
+    on = s < 0.5 ? 1.0 : on
+    deg = seq(floor(h1 * 8.0), 0.0, 0.0, 0.0, 4.0, 2.0, 6.0, 1.0, 0.0)
+    deg = beat > 0.5 ? (h1 < 0.6 ? 0.0 : deg) : deg
+    sc = floor(clamp(pScale, 0.0, 0.999) * 7.0)
+    sMin = seq(deg, 0.0, 2.0, 3.0, 5.0, 7.0, 8.0, 10.0)
+    sPhr = seq(deg, 0.0, 1.0, 3.0, 5.0, 7.0, 8.0, 10.0)
+    sDor = seq(deg, 0.0, 2.0, 3.0, 5.0, 7.0, 9.0, 10.0)
+    sPen = seq(deg, 0.0, 3.0, 5.0, 7.0, 10.0, 12.0, 15.0)
+    sHar = seq(deg, 0.0, 2.0, 3.0, 5.0, 7.0, 8.0, 11.0)
+    sMix = seq(deg, 0.0, 2.0, 4.0, 5.0, 7.0, 9.0, 10.0)
+    sPdm = seq(deg, 0.0, 1.0, 4.0, 5.0, 7.0, 8.0, 10.0)
+    semi = sc < 0.5 ? sMin : (sc < 1.5 ? sPhr : (sc < 2.5 ? sDor : (sc < 3.5 ? sPen : (sc < 4.5 ? sHar : (sc < 5.5 ? sMix : sPdm)))))
+    jump = h4 < pJump ? (h4 < pJump * 0.8 ? 12.0 : -12.0) : 0.0
+    jump = deg > 5.5 ? min(jump, 0.0) : jump
+    rootS = floor(clamp(pRoot, 0.0, 0.999) * 12.0)
+    octS = floor(clamp(pOct, 0.0, 0.999) * 4.0) * 12.0 - 24.0
+    note = rootS + semi + jump + octS
+    tied = curSlide
+    curSlide = and(h5 < pSlide, on > 0.5)
+    acc = h3 < pAcc + beat * 0.15 ? 1.0 : 0.0
+    newNote = on
+}
+
+if (newNote > 0.5) {
+    pitchOut = note / 96.0
+    velOut = acc > 0.5 ? 1.0 : 0.6
+    slideOut = tied
+    gTimer = curSlide > 0.5 ? stepLen * 1.05 : max(stepLen * (0.1 + pGate * 0.85), 64.0)
+    gapT = tied > 0.5 ? 0.0 : 3.0
+}
+
+gTimer = gTimer - 1.0
+gapT = gapT - 1.0
+gateOut = and(gTimer > 0.0, gapT <= 0.0)
+slideOut = gateOut > 0.5 ? slideOut : 0.0
+
+output(pitchOut, audio, PitchCV)
+output(gateOut, gate, Gate)
+output(velOut, audio, Velocity)
+output(slideOut, gate, Slide)
