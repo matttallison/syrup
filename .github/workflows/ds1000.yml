@@ -1,0 +1,62 @@
+name: Build DS-1000
+
+on:
+  push:
+    paths:
+      - 'ds1000/**'
+      - '.github/workflows/ds1000.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: devkitpro/devkitarm:latest
+    defaults:
+      run:
+        working-directory: ds1000
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install CIA tools (bannertool, makerom)
+        run: |
+          apt-get update && apt-get install -y p7zip-full curl
+          curl -L https://github.com/Epicpkmn11/bannertool/releases/latest/download/bannertool.zip -o bannertool.zip
+          7z e -y bannertool.zip linux-x86_64/bannertool
+          chmod +x bannertool && mv bannertool /usr/local/bin/
+          curl -L https://github.com/3DSGuy/Project_CTR/releases/download/makerom-v0.17/makerom-v0.17-ubuntu_x86_64.zip -o makerom.zip
+          7z e -y makerom.zip
+          chmod +x makerom && mv makerom /usr/local/bin/
+
+      - name: Build .3dsx
+        run: make 2>&1 | tee build.log; test ${PIPESTATUS[0]} -eq 0
+        shell: bash
+
+      - name: Build .cia
+        run: |
+          bannertool makebanner -i app/banner.png -a app/BannerAudio.wav -o build/banner.bin
+          bannertool makesmdh -s "DS-1000" -l "Drum machine" -p "Soul Provider Records" -i app/icon.png -o build/icon.bin
+          makerom -f cia -target t -o ds1000.cia -elf ds1000.elf -rsf app/ds1000.rsf -banner build/banner.bin -icon build/icon.bin
+          echo "$GITHUB_SHA" | cut -c1-7 > version.txt
+
+      - name: Publish to "ds1000" release (QR / phone download)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ds1000
+          name: DS-1000 drum machine (latest build)
+          make_latest: false
+          files: |
+            ds1000/ds1000.3dsx
+            ds1000/ds1000.cia
+            ds1000/version.txt
+
+      - name: Publish build log on failure
+        if: failure()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ds1000-log
+          name: DS-1000 build log
+          make_latest: false
+          files: ds1000/build.log
