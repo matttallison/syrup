@@ -11,10 +11,14 @@ struct Step { bool on = false, accent = false, slide = false; int semis = 0; };
 static inline float fr (float x) { return x - std::floor (x); }
 static inline float hsh (float s, float a, float sd, float b, float k) { return fr (std::sin (s * a + sd * b) * k); }
 
-static const char* const scaleNames[] = { "Minor", "Phrygian", "Dorian", "Minor Pent", "Harmonic Min", "Mixolydian", "Phrygian Dom" };
-static const int scales[7][7] = {
+static const char* const scaleNames[] = { "Minor", "Phrygian", "Dorian", "Minor Pent", "Harmonic Min", "Mixolydian", "Phrygian Dom",
+    "Major", "Lydian", "Locrian", "Blues", "Major Pent", "Hungarian Min", "Japanese (In)" };
+static constexpr int numScales = 14;
+static const int scales[14][7] = {
     { 0, 2, 3, 5, 7, 8, 10 }, { 0, 1, 3, 5, 7, 8, 10 }, { 0, 2, 3, 5, 7, 9, 10 }, { 0, 3, 5, 7, 10, 12, 15 },
-    { 0, 2, 3, 5, 7, 8, 11 }, { 0, 2, 4, 5, 7, 9, 10 }, { 0, 1, 4, 5, 7, 8, 10 } };
+    { 0, 2, 3, 5, 7, 8, 11 }, { 0, 2, 4, 5, 7, 9, 10 }, { 0, 1, 4, 5, 7, 8, 10 },
+    { 0, 2, 4, 5, 7, 9, 11 }, { 0, 2, 4, 6, 7, 9, 11 }, { 0, 1, 3, 5, 6, 8, 10 }, { 0, 3, 5, 6, 7, 10, 12 },
+    { 0, 2, 4, 7, 9, 12, 14 }, { 0, 2, 3, 6, 7, 8, 11 }, { 0, 1, 5, 7, 8, 12, 13 } };
 
 // semis is relative to the root, before octave/root offsets
 static inline Step makeStep (int step, const Settings& st)
@@ -36,7 +40,7 @@ static inline Step makeStep (int step, const Settings& st)
     if (beat && h1 < 0.6f) deg = 0;
     int jump = h4 < st.jumps ? (h4 < st.jumps * 0.8f ? 12 : -12) : 0;
     if (deg > 5 && jump > 0) jump = 0;
-    o.semis = scales[st.scale < 0 || st.scale > 6 ? 0 : st.scale][deg] + jump;
+    o.semis = scales[st.scale < 0 || st.scale >= numScales ? 0 : st.scale][deg] + jump;
     o.slide = o.on && h5 < st.slide;
     o.accent = h3 < st.accent + (beat ? 0.15f : 0.0f);
     return o;

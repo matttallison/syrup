@@ -30,7 +30,7 @@ APVTS::ParameterLayout AcidProcessor::layout()
 }
 
 AcidProcessor::AcidProcessor()
-    : AudioProcessor (BusesProperties()), apvts (*this, nullptr, "STATE", layout()) {}
+    : AudioProcessor (BusesProperties()), apvts (*this, nullptr, "STATE", layout()) { regenerate(); }
 
 static int ival (const APVTS& a, const char* id) { return (int) std::lround (a.getRawParameterValue (id)->load()); }
 static float fval (const APVTS& a, const char* id) { return a.getRawParameterValue (id)->load(); }
@@ -42,6 +42,36 @@ acid::Settings AcidProcessor::settings() const
     s.accent = fval (apvts, "accent"); s.slide = fval (apvts, "slide"); s.jumps = fval (apvts, "jumps"); s.scale = ival (apvts, "scale");
     return s;
 }
+bool AcidProcessor::sameGen (const acid::Settings& a, const acid::Settings& b)
+{
+    return a.seed == b.seed && a.scale == b.scale && a.mutate == b.mutate && a.density == b.density
+        && a.accent == b.accent && a.slide == b.slide && a.jumps == b.jumps;
+}
+void AcidProcessor::regenerate()
+{
+    const auto st = settings();
+    std::array<PStep, maxSteps> np;
+    for (int i = 0; i < maxSteps; ++i) { const auto g = acid::makeStep (i, st); np[(size_t) i] = { g.on, g.accent, g.slide, g.semis }; }
+    const juce::SpinLock::ScopedLockType sl (patLock);
+    pat = np; lastGen = st; generatedOnce = true;
+}
+void AcidProcessor::checkRegen()
+{
+    const auto st = settings();
+    bool need;
+    { const juce::SpinLock::ScopedLockType sl (patLock); need = ! generatedOnce || ! sameGen (st, lastGen); }
+    if (need) regenerate();
+}
+std::array<AcidProcessor::PStep, AcidProcessor::maxSteps> AcidProcessor::getPattern()
+{
+    const juce::SpinLock::ScopedLockType sl (patLock); return pat;
+}
+void AcidProcessor::editStep (int i, std::function<void (PStep&)> fn)
+{
+    if (i < 0 || i >= maxSteps) return;
+    const juce::SpinLock::ScopedLockType sl (patLock); fn (pat[(size_t) i]);
+}
+
 int AcidProcessor::length() const { const int l = ival (apvts, "length"); return l == 0 ? 8 : l == 1 ? 16 : 32; }
 int AcidProcessor::rootNote() const
 {
@@ -104,7 +134,8 @@ void AcidProcessor::processBlock (juce::AudioBuffer<float>& audio, juce::MidiBuf
     const double ppqPerSample = bpm / 60.0 / sampleRate, stepSamples = sampleRate * 60.0 / bpm / 4.0;
     const double end = ppq + n * ppqPerSample;
     const int len = length(), root = rootNote();
-    const auto st = settings();
+    checkRegen();
+    { const juce::SpinLock::ScopedTryLockType tl (patLock); if (tl.isLocked()) patAudio = pat; }
     const float gate = fval (apvts, "gate");
 
     int k = (int) std::ceil (ppq * 4.0 - 1e-6);
@@ -116,12 +147,12 @@ void AcidProcessor::processBlock (juce::AudioBuffer<float>& audio, juce::MidiBuf
         const int pos = juce::jlimit (0, n - 1, (int) std::lround ((k / 4.0 - ppq) / ppqPerSample));
         flushOff (pos + 1);
         const int idx = ((k % len) + len) % len;
-        const auto s = acid::makeStep (idx, st);
+        const auto& s = patAudio[(size_t) idx];
         playStep = idx;
         if (s.on)
         {
             const int note = juce::jlimit (0, 127, root + s.semis);
-            const int vel = s.accent ? ival (apvts, "velAcc") : ival (apvts, "velNorm");
+            const int vel = s.acc ? ival (apvts, "velAcc") : ival (apvts, "velNorm");
             if (lastSlide && sounding >= 0)
             {
                 if (note != sounding) { const int old = sounding; noteOn (out, note, vel, pos);   // legato: new note before the old one ends
@@ -150,11 +181,25 @@ void AcidProcessor::processBlock (juce::AudioBuffer<float>& audio, juce::MidiBuf
 
 void AcidProcessor::getStateInformation (juce::MemoryBlock& d)
 {
-    if (auto xml = apvts.copyState().createXml()) copyXmlToBinary (*xml, d);
+    auto state = apvts.copyState();
+    juce::String ps; for (auto& p : getPattern()) ps << (p.on ? 1 : 0) << (p.acc ? 1 : 0) << (p.slide ? 1 : 0) << ":" << p.semis << ";";
+    state.setProperty ("pattern", ps, nullptr);
+    if (auto xml = state.createXml()) copyXmlToBinary (*xml, d);
 }
 void AcidProcessor::setStateInformation (const void* data, int size)
 {
-    if (auto xml = getXmlFromBinary (data, size)) apvts.replaceState (juce::ValueTree::fromXml (*xml));
+    auto xml = getXmlFromBinary (data, size);
+    if (xml == nullptr) return;
+    auto vt = juce::ValueTree::fromXml (*xml);
+    apvts.replaceState (vt);
+    regenerate();   // matches the knobs, then the saved edits are laid on top
+    auto toks = juce::StringArray::fromTokens (vt.getProperty ("pattern").toString(), ";", "");
+    const juce::SpinLock::ScopedLockType sl (patLock);
+    for (int i = 0; i < juce::jmin (maxSteps, toks.size()); ++i)
+    {
+        const auto t = toks[i]; if (t.length() < 5) continue;
+        pat[(size_t) i] = { t[0] == '1', t[1] == '1', t[2] == '1', t.fromFirstOccurrenceOf (":", false, false).getIntValue() };
+    }
 }
 
 juce::AudioProcessorEditor* AcidProcessor::createEditor() { return new AcidEditor (*this); }
