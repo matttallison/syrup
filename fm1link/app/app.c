@@ -74,7 +74,7 @@ void app_render(int32_t *lr, uint32_t n, uint32_t master_q12)
         b[0] = (uint8_t)st;
         b[1] = (uint8_t)((pkt >> 16) & 0x7Fu);
         b[2] = (uint8_t)((pkt >> 24) & 0x7Fu);
-        link_push(b, (uint32_t)msg_len(st), 1);
+        link_push(b, (uint32_t)msg_len(st), plat_midi_in_t24(), 1);
         if (st != 0xF8u) {
             in_count++;
             in_ago_ms = plat_ms();
@@ -82,7 +82,7 @@ void app_render(int32_t *lr, uint32_t n, uint32_t master_q12)
     }
 }
 
-static void send3(uint8_t a, uint8_t b, uint8_t c) { uint8_t m[3] = {a, b, c}; link_push(m, (uint32_t)msg_len(a), 0); }
+static void send3(uint8_t a, uint8_t b, uint8_t c) { uint8_t m[3] = {a, b, c}; link_push(m, (uint32_t)msg_len(a), plat_ticks24(), 0); }
 
 void app_panic(void)
 {
@@ -494,7 +494,7 @@ void app_frame(void)
 static uint32_t h_sent, h_target, h_manual;
 void link_start(void) {}
 int link_running(void) { return 1; }
-void link_push(const uint8_t *b, uint32_t n, int from_render) { (void)b, (void)n, (void)from_render; h_sent++; }
+void link_push(const uint8_t *b, uint32_t n, uint32_t t24, int from_render) { (void)b, (void)n, (void)t24, (void)from_render; h_sent++; }
 void link_target(uint32_t ip, int manual) { h_target = ip; h_manual = (uint32_t)manual; }
 uint32_t link_found(void) { return 0xB701A8C0u; }   /* 192.168.1.183 */
 uint32_t link_found_ago(void) { return 500; }

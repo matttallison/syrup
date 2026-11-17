@@ -6,6 +6,7 @@ usb_product = "SYRUP LINK"
 wifi = true                    # Wi-Fi (not with ble)
 usb_audio_in = false           # Wi-Fi needs the RAM
 usb_audio_out = false
+midi_stamp = true              # USB / TRS messages stamped when they land (the timing Syrup buffers to)
 net = ["net.c"]                # the network side: lwIP sockets in a task of its own
 words = "words.tsv"
 tagline = "the FM-1 as a Wi-Fi MIDI bridge for Syrup on a 2DS"

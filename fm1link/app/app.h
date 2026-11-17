@@ -26,7 +26,8 @@ void app_say(const char *a, const char *b);
 /* net.c (built apart, with lwIP's headers) */
 void link_start(void);                   /* starts the network task once (call when Wi-Fi is connected) */
 int link_running(void);
-void link_push(const uint8_t *b, uint32_t n, int from_render);   /* MIDI bytes to send (two queues: render, main) */
+void link_push(const uint8_t *b, uint32_t n, uint32_t t24, int from_render);   /* one message and when it came in
+                                         * (plat_ticks24's clock); two queues: render, main loop */
 void link_target(uint32_t ip, int manual);   /* manual: use ip; else the address the beacon gave */
 uint32_t link_found(void);               /* the address Syrup announced itself from (0 = not heard yet) */
 uint32_t link_found_ago(void);           /* ms since its last announcement */

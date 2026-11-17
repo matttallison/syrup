@@ -29,17 +29,46 @@ static void qpush(struct q *q, const uint8_t *b, uint32_t n)
     __sync_synchronize();
     q->w = w + n;
 }
-void link_push(const uint8_t *b, uint32_t n, int from_render) { qpush(from_render ? &qr : &qm, b, n); }
+/* a record: the time it came in (24 MHz ticks, plat_ticks24's clock) then the message; Syrup plays each at that time
+ * plus a fixed buffer, so the network's wobble becomes one steady delay */
+void link_push(const uint8_t *b, uint32_t n, uint32_t t24, int from_render)
+{
+    uint8_t r[8];
+    uint32_t i;
+    if (n > 3u)
+        return;
+    r[0] = (uint8_t)t24;
+    r[1] = (uint8_t)(t24 >> 8);
+    r[2] = (uint8_t)(t24 >> 16);
+    r[3] = (uint8_t)(t24 >> 24);
+    for (i = 0; i < n; i++)
+        r[4 + i] = b[i];
+    qpush(from_render ? &qr : &qm, r, 4u + n);
+}
 
+static uint32_t rec_len(uint8_t st)
+{
+    if (st >= 0xF8u) return 5u;
+    switch (st & 0xF0u) {
+    case 0xC0u: case 0xD0u: return 6u;
+    case 0xF0u: return st == 0xF2u ? 7u : (st == 0xF1u || st == 0xF3u) ? 6u : 5u;
+    default: return 7u;
+    }
+}
 static uint32_t qtake(struct q *q, uint8_t *d, uint32_t room)
 {
-    uint32_t r = q->r, w = q->w, n = w - r, i;
-    if (n > room)
-        n = room;                        /* (the producers only write whole messages; a cut one finishes next) */
-    for (i = 0; i < n; i++)
-        d[i] = q->b[(r + i) & (QN - 1u)];
+    uint32_t r = q->r, w = q->w, n = 0, i;
+    while (w - r >= 5u) {                 /* whole records only */
+        uint32_t k = rec_len(q->b[(r + 4u) & (QN - 1u)]);
+        if (w - r < k || n + k > room)
+            break;
+        for (i = 0; i < k; i++)
+            d[n + i] = q->b[(r + i) & (QN - 1u)];
+        n += k;
+        r += k;
+    }
     __sync_synchronize();
-    q->r = r + n;
+    q->r = r;
     return n;
 }
 
@@ -96,9 +125,12 @@ static void task(void *p)
             }
         }
         ip = manual ? target_ip : found_ip;
-        n = qtake(&qr, buf, sizeof buf);
+        buf[0] = 'S';                     /* "SL" 1: timed records */
+        buf[1] = 'L';
+        buf[2] = 1;
+        n = 3u + qtake(&qr, buf + 3, sizeof buf - 3u);
         n += qtake(&qm, buf + n, sizeof buf - n);
-        if (n && ip && tx >= 0) {
+        if (n > 3u && ip && tx >= 0) {
             struct sockaddr_in a;
             memset(&a, 0, sizeof a);
             a.sin_len = sizeof a;
