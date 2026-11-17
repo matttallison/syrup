@@ -1,0 +1,43 @@
+name: Build Syrup Acid (AU / VST3 / AUv3)
+
+on:
+  push:
+    paths:
+      - 'acidvst/**'
+      - '.github/workflows/acidvst.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  mac:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure (Xcode)
+        run: cmake -S acidvst -B build -G Xcode
+      - name: Build
+        run: cmake --build build --config Release -- -quiet CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO DEVELOPMENT_TEAM=
+      - name: Collect + ad-hoc sign
+        run: |
+          set -e
+          A=build/SyrupAcid_artefacts/Release
+          ls -R "$A" | head -50
+          mkdir -p out
+          cp -R "$A/AU/Syrup Acid.component" out/
+          cp -R "$A/VST3/Syrup Acid.vst3" out/
+          cp -R "$A/Standalone/Syrup Acid.app" out/ || true
+          for b in out/*; do codesign --force --deep --sign - "$b" || true; done
+          cp acidvst/INSTALL.txt out/
+          cd out && zip -qry ../SyrupAcid-mac.zip .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SyrupAcid-mac
+          path: SyrupAcid-mac.zip
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: acid-latest
+          name: Syrup Acid plugin (latest build)
+          make_latest: false
+          files: SyrupAcid-mac.zip

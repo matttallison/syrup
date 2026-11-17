@@ -1,0 +1,13 @@
+SYRUP ACID - 303-style bassline generator (MIDI effect)
+
+Install (Mac):
+  Syrup Acid.component -> ~/Library/Audio/Plug-Ins/Components/
+  Syrup Acid.vst3      -> ~/Library/Audio/Plug-Ins/VST3/
+  Syrup Acid.app       -> /Applications  (holds the AUv3 for Drambo and other AUv3 hosts; open it once)
+
+These builds are not notarized. If macOS blocks them, run in Terminal:
+  xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/Components/"Syrup Acid.component" ~/Library/Audio/Plug-Ins/VST3/"Syrup Acid.vst3" /Applications/"Syrup Acid.app"
+
+Use: put it on a MIDI track in front of a synth (or a MIDI output to Syrup). Press play in the host.
+Seed picks the pattern (same numbers as the Drambo Code module). Keys: Transpose = the last key you
+played moves the line (C3 = no change); Hold to play = it only plays while you hold a key.
