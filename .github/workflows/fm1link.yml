@@ -1,0 +1,46 @@
+name: Build SYRUP LINK (FM-1 firmware)
+
+on:
+  push:
+    paths:
+      - 'fm1link/**'
+      - '.github/workflows/fm1link.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  firmware:
+    uses: zvenson/fm1-build/.github/workflows/build.yml@v1
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    with:
+      sdk: true
+      build: |
+        set -euo pipefail
+        git submodule update --init --recursive fm1link/base
+        sudo apt-get install -y -qq libfribidi0
+        ./fm1link/build.sh
+        ls -la fm1link/app/build
+      packages: fm1link/app/build/link.fwsc
+
+  publish:
+    needs: firmware
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages
+          path: out
+      - name: Publish to the "fm1link-latest" release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: fm1link-latest
+          name: SYRUP LINK for the FM-1 (latest build)
+          make_latest: false
+          files: out/**/link.fwsc

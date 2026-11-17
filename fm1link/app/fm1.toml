@@ -1,0 +1,17 @@
+# SYRUP LINK: the FM-1 as a Wi-Fi MIDI bridge and controller for Syrup on a Nintendo 2DS / 3DS
+name = "LINK"                  # APP_NAME is in app.h; this names the build's files
+id_prefix = "FM-1_57"          # package identity: dev FM-1_5700
+usb_manufacturer = "Soul Provider Records"
+usb_product = "SYRUP LINK"
+wifi = true                    # Wi-Fi (not with ble)
+usb_audio_in = false           # Wi-Fi needs the RAM
+usb_audio_out = false
+net = ["net.c"]                # the network side: lwIP sockets in a task of its own
+words = "words.tsv"
+tagline = "the FM-1 as a Wi-Fi MIDI bridge for Syrup on a 2DS"
+repo = "https://github.com/matttallison/syrup"
+licence = "MPL-2.0"
+credits = "Built on Charles Vestal's fm1-base."
+author = "Matt Allison"
+description = "Plug the FM-1 into a phone or computer over USB: everything it receives goes over Wi-Fi to Syrup on a Nintendo 2DS, with the FM-1's own keys and knobs as a controller."
+tags = ["utility", "controller"]

@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "id": "link",
+  "name": "Soul Provider Records",
+  "author": "Matt Allison",
+  "license": "MPL-2.0",
+  "tagline": "the FM-1 as a Wi-Fi MIDI bridge for Syrup on a 2DS",
+  "description": "Plug the FM-1 into a phone or computer over USB: everything it receives goes over Wi-Fi to Syrup on a Nintendo 2DS, with the FM-1's own keys and knobs as a controller.",
+  "tags": ["utility", "controller"],
+  "source": "https://github.com/matttallison/syrup",
+  "hardware": {
+    "models": ["FM-1"],
+    "flash": ["856014", "B36014"],
+    "features": ["wifi", "screen-reader"]
+  },
+  "credits": "Built on Charles Vestal's fm1-base."
+}

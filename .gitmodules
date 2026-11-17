@@ -1,0 +1,3 @@
+[submodule "fm1link/base"]
+	path = fm1link/base
+	url = https://github.com/charlesvestal/fm1-base

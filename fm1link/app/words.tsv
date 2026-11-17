@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: MPL-2.0
+# SYRUP LINK's words for a screen reader: the text on the screen <TAB> what to say.
+# url: https://matttallison.github.io/syrup/words/
+LINK	link
+SYRUP	syrup
