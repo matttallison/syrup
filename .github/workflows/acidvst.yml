@@ -18,7 +18,7 @@ jobs:
       - name: Configure (Xcode)
         run: cmake -S acidvst -B build -G Xcode
       - name: Build
-        run: cmake --build build --config Release -- -quiet CODE_SIGN_IDENTITY=- CODE_SIGNING_REQUIRED=NO DEVELOPMENT_TEAM=
+        run: cmake --build build --config Release -- -quiet CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= CODE_SIGNING_ALLOWED=YES
       - name: Collect + ad-hoc sign
         run: |
           set -e
@@ -28,7 +28,14 @@ jobs:
           cp -R "$A/AU/Syrup Acid.component" out/
           cp -R "$A/VST3/Syrup Acid.vst3" out/
           cp -R "$A/Standalone/Syrup Acid.app" out/ || true
-          for b in out/*; do codesign --force --deep --sign - "$b" || true; done
+          # keep the entitlements Xcode signed in (the AUv3 extension must stay sandboxed or hosts won't list it)
+          for b in "out/Syrup Acid.component" "out/Syrup Acid.vst3"; do codesign --force --sign - "$b"; done
+          if [ -d "out/Syrup Acid.app" ]; then
+            codesign --force --sign - --preserve-metadata=entitlements,requirements,flags "out/Syrup Acid.app/Contents/PlugIns/Syrup Acid.appex"
+            codesign --force --sign - --preserve-metadata=entitlements,requirements,flags "out/Syrup Acid.app"
+            echo "--- appex entitlements"; codesign -d --entitlements - "out/Syrup Acid.app/Contents/PlugIns/Syrup Acid.appex" || true
+            plutil -p "out/Syrup Acid.app/Contents/PlugIns/Syrup Acid.appex/Contents/Info.plist" | grep -A12 NSExtension || true
+          fi
           cp acidvst/INSTALL.txt out/
           cd out && zip -qry ../SyrupAcid-mac.zip .
       - uses: actions/upload-artifact@v4
