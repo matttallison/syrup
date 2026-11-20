@@ -1,0 +1,176 @@
+/* SPDX-License-Identifier: GPL-3.0-only */
+/* zp12's screen on the host: the real UI code (firmware/src/sp_ui.c) on a framebuffer; writes PPMs to look at.
+ *   cc -O2 -w -Ifirmware/src -Ifirmware/gen -Ibuild/gen -o build/host/zp12_ui_test tests/zp12_ui_test.c -lm
+ *   build/host/zp12_ui_test build/host */
+#include <stdio.h>
+#include <stdint.h>
+#include <string.h>
+static uint32_t fm1_ms;
+static uint16_t fb[240 * 240];
+static void lcd_sync(void) {}
+static void lcd_blit(uint32_t x, uint32_t y, uint32_t w, uint32_t h, const uint16_t *p)
+{
+    uint32_t i, j;
+    for (j = 0; j < h; j++) for (i = 0; i < w; i++) if (x + i < 240u && y + j < 240u) fb[(y + j) * 240u + x + i] = p[j * w + i];
+}
+static void lcd_fill(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint16_t c)
+{
+    uint32_t i, j;
+    uint16_t s = (uint16_t)((c >> 8) | (c << 8));
+    for (j = 0; j < h; j++) for (i = 0; i < w; i++) if (x + i < 240u && y + j < 240u) fb[(y + j) * 240u + x + i] = s;
+}
+#define __attribute__(x)
+#define CV_MAX (232u * 80u)                     /* as on the device (zp12.c): a region taller than 80 rows is drawn in parts */
+#include "gfx.c"
+#define SP_WITH_FX 1
+#include "sp_core.c"
+#include "sp_fx.c"
+#include "zp12_kit.h"
+#include "sp_seq.c"
+#include "sp_ui.c"
+static const char *dir;
+static void ppm(const char *name)
+{
+    char p[256];
+    FILE *f;
+    uint32_t i;
+    snprintf(p, sizeof p, "%s/%s.ppm", dir, name);
+    f = fopen(p, "wb");
+    fprintf(f, "P6\n240 240\n255\n");
+    for (i = 0; i < 240u * 240u; i++) {
+        uint16_t v = (uint16_t)((fb[i] >> 8) | (fb[i] << 8));
+        uint8_t rgb[3] = {(uint8_t)((v >> 11) * 255 / 31), (uint8_t)(((v >> 5) & 63) * 255 / 63), (uint8_t)((v & 31) * 255 / 31)};
+        fwrite(rgb, 1, 3, f);
+    }
+    fclose(f);
+}
+int main(int argc, char **argv)
+{
+    uint32_t i;
+    dir = argc > 1 ? argv[1] : "build/host";
+    for (i = 0; i < KIT_NWAVE; i++) { sp_wave[i].d = KIT_DATA + KIT_WAVE[i].off; sp_wave[i].n = KIT_WAVE[i].n; sp_wave[i].rate = 26040; }
+    memcpy(sp_sound, KIT_PADS, sizeof sp_sound);
+    ui_init();
+    ui.back = 1;                                            /* (as zp12.c: pages back after 12 s) */
+    for (i = 0; i < 27u; i++)                               /* the keys F3..G5: black where a piano has them */
+        if ((white_of(i) == 0xFFu) != ((0x54Au >> ((i + 5u) % 12u)) & 1u)) { printf("zp12 ui: key %u black / white wrong FAIL\n", i); return 1; }
+    fm1_ms = 1000;
+    ui_draw(); ppm("zp12-home");
+    key_down(0, 0); key_down(4, 0); fm1_ms += 20; knob(2, -30); ui_draw(); ppm("zp12-hit");
+    button(B_SEQ); fm1_ms += 2000; ui_draw(); ppm("zp12-seg");
+    sq.playing = 1; sq.recording = 1; sq.pos = (SQ_BAR + 2u * SQ_PPQ) << 16; sq_seg[0].bars = 2; fm1_ms += 10; ui_draw(); ppm("zp12-rec");
+    sq.playing = 0; sq.recording = 0; button(B_EDIT); button(B_EDIT); button(B_EDIT); button(B_EDIT); knob(3, 60); fm1_ms += 2000; ui_draw(); ppm("zp12-sfx");
+    button(B_FX); knob(0, -9); fm1_ms += 2000; ui_draw(); ppm("zp12-filter"); djf.v = 0; button(B_FX); button(B_FX); fm1_ms += 2000; ui_draw(); ppm("zp12-delay");
+    fm1_ms += 13000; ui_draw(); ppm("zp12-back");           /* untouched 12 s: the faders again */
+    if (ui.page != PG_HOME) { printf("zp12 ui: a page did not go back after 12 s FAIL\n"); return 1; }
+    sq_insert(&sq_seg[0], 0, 0, 7, 0, 0, 0); sq_insert(&sq_seg[0], 96, 1, 7, 0, 0, sp_lock_of(&sp_sound[1])); sq_insert(&sq_seg[0], 48, 4, 5, 0, 0, 0);
+    sq_insert(&sq_seg[0], 144, 4, 5, 0, 0, 0); sq_insert(&sq_seg[0], 240, 0, 7, 0, 0, 0); sq_seg[0].bars = 2;
+    ui.sel = 0; ui.steps = 1; ui.force = 1; sq.playing = 1; sq.pos = (5u * 24u) << 16; fm1_ms += 10; ui_draw(); ppm("zp12-steps");
+    ui.steps = 0; ui.force = 1; sq.playing = 0;            /* the sample: D1, WAVE */
+    ui.pair = 1; key_down(12, 0); ui.sel = 23; page(PG_WAVE); fm1_ms += 2000; ui_draw(); ppm("zp12-wave");   /* C8: EP Dm9 (2.1) */
+    key_down(12, 0); ui.sel = 23; page(PG_HOME); fm1_ms += 20; ui_draw(); ppm("zp12-chord");
+    sq.playing = 1; sq.recording = 0; sq.seg = 2; sq.pos = (SQ_BAR + 3u * SQ_PPQ) << 16; page(PG_SEG); fm1_ms += 2000; ui_draw(); ppm("zp12-loop");
+    sq.playing = 0; ui.sel = 1; page(PG_SFX); fm1_ms += 2000; ui_draw(); ppm("zp12-sends");
+    ui.sel = 0; page(PG_SETUP); fm1_ms += 2000; ui_draw(); ppm("zp12-setup");
+    page(PG_HOME); ui.pair = 0; key_down(2, 0); fm1_ms += 2000; ui_preset(1); fm1_ms += 20; ui_draw(); ppm("zp12-preset");
+    if (sp_sound[1].wave != (KIT_PADS[1].wave + 1u) % KIT_NWAVE) { printf("zp12 ui: PRESETS did not change the pad's sample FAIL\n"); return 1; }
+    fm1_ms += 2000; sq.seg = 0;                            /* REC held: undone at 0.7 s, the bar, the loop cleared */
+    ui_holds(1u << B_REC, 1u << B_REC, 0); fm1_ms += 800; ui_holds(1u << B_REC, 0, 0); fm1_ms += 600; ui_holds(1u << B_REC, 0, 0);
+    ui_draw(); ppm("zp12-hold");
+    fm1_ms += 800; ui_holds(1u << B_REC, 0, 0); sq_block(); ui_draw(); ppm("zp12-cleared");
+    if (sq_seg[0].n || sq.rec_arm) { printf("zp12 ui: REC held did not clear the loop / undo the arm FAIL\n"); return 1; }
+    ui_holds(0, 0, 1u << B_REC);
+    ui_holds(1u << B_EDIT, 1u << B_EDIT, 0); button(B_EDIT); button(B_OCTDN); sq_block(); ui_holds(0, 0, 1u << B_EDIT);
+    if (sq_seg[0].n != 5u || ui.page != PG_HOME) { printf("zp12 ui: EDIT + OCT- did not undo FAIL\n"); return 1; }
+    {   /* FX held + OCT-: REV THROW, the bank stays; the reverb send goes full while held, and back */
+        uint32_t l, n, pr = ui.pair;
+        static int32_t o[2 * SP_BLK];
+        int64_t e = 0;
+        ui.held = 1u << B_FX; ui.fx_used = 0; button(B_OCTDN); button(B_OCTUP);
+        if (ui.pair != pr || !ui.fx_used) { printf("zp12 ui: FX + OCT changed the bank FAIL\n"); return 1; }
+        sp_thr_req = 1; ui_leds(&l, &i, &i);
+        if (!((l >> B_OCTDN) & 1u) || (l >> B_OCTUP) & 1u) { printf("zp12 ui: REV THROW not lit FAIL\n"); return 1; }
+        sp_sound[0].send[2] = 0; sp_trigger(0, 127);
+        for (n = 0; n < 12u; n++) sp_render(o);
+        for (n = 0; n < SP_BLK; n++) e += sp_bus[2][n] < 0 ? -sp_bus[2][n] : sp_bus[2][n];
+        if (sp_thr[0] != 32767 || sp_thr[1] || !e) { printf("zp12 ui: REV THROW did not open the send FAIL\n"); return 1; }
+        sp_thr_req = 0; for (n = 0; n < 12u; n++) sp_render(o);
+        if (sp_thr[0]) { printf("zp12 ui: REV THROW did not close FAIL\n"); return 1; }
+        ui.held = 0;
+    }
+    fm1_ms += 2000; ui_holds(1u << B_SAVE, 1u << B_SAVE, 0); key_down(3, 0); sq_block(); ui_holds(0, 0, 1u << B_SAVE); ui_draw(); ppm("zp12-saveloop");
+    if (sq_seg[1].n != 5u || ui.save_req != 1u) { printf("zp12 ui: SAVE + a black key did not save the loop FAIL\n"); return 1; }
+    page(PG_SEG); ui.shift = 0; i = ui.mix[4]; button(B_SEL); knob(0, -3); fm1_ms += 20; ui_draw(); ppm("zp12-sel");
+    if (!ui.shift || ui.page != PG_HOME || ui.mix[4] == i || sq.seg != 0u) { printf("zp12 ui: SEL on the LOOP page did not give the faders 5-8 FAIL\n"); return 1; }
+    {   /* lit, a page open: the knobs are the page's, the faders stay */
+        uint8_t m = ui.mix[4];
+        page(PG_SOUND); knob(0, 1);
+        if (ui.mix[4] != m || ui.page != PG_SOUND) { printf("zp12 ui: a page with SEL lit FAIL\n"); return 1; }
+    }
+    { uint32_t l; ui_leds(&l, &i, &i); if (!((l >> B_SEL) & 1u)) { printf("zp12 ui: SEL not lit FAIL\n"); return 1; } }
+    button(B_SEL);                                          /* again: 1-4, and the faders */
+    if (ui.shift || ui.page != PG_HOME) { printf("zp12 ui: SEL again did not give 1-4 FAIL\n"); return 1; }
+    {   /* an own sample (the web editor's): PRESETS finds it after the kit, shows its name, skips the empty places */
+        static uint8_t snd[300];
+        sp_wave[KIT_NWAVE + 3].d = snd; sp_wave[KIT_NWAVE + 3].n = 200; sp_wave[KIT_NWAVE + 3].rate = 26040;
+        strcpy(ui_uname[3], "MY KICK"); ui_uflags[3] = 1;
+        page(PG_HOME); ui.sel = 0; sp_sound[0].wave = KIT_NWAVE - 1; sp_sound[0].flags = 0;
+        ui_preset(1); fm1_ms += 20; ui_draw(); ppm("zp12-own");
+        if (sp_sound[0].wave != KIT_NWAVE + 3 || !(sp_sound[0].flags & SPF_33) || strcmp(sound_name(0), "MY KICK")) { printf("zp12 ui: PRESETS did not find the own sample FAIL\n"); return 1; }
+        ui_preset(1);
+        if (sp_sound[0].wave != 0u) { printf("zp12 ui: PRESETS did not skip the empty places FAIL\n"); return 1; }
+        ui_preset(-1);
+        if (sp_sound[0].wave != KIT_NWAVE + 3) { printf("zp12 ui: PRESETS back did not find the own sample FAIL\n"); return 1; }
+        sp_wave[KIT_NWAVE + 5].d = snd; sp_wave[KIT_NWAVE + 5].n = 100; sp_wave[KIT_NWAVE + 5].rate = 26040;
+        strcpy(ui_uname[5], "BREAK"); ui_uflags[5] = 2; sp_sound[0].tune = -3;
+        ui_preset(1);                                      /* stored at double speed: an octave down on the pad ... */
+        if (sp_sound[0].wave != KIT_NWAVE + 5 || sp_sound[0].tune != -12) { printf("zp12 ui: a x2 sample did not set TUNE -12 FAIL\n"); return 1; }
+        ui_preset(1);                                      /* ... and back to 0 on a normal one */
+        if (sp_sound[0].wave != 0u || sp_sound[0].tune != 0) { printf("zp12 ui: leaving a x2 sample did not reset TUNE FAIL\n"); return 1; }
+    }
+    page(PG_FILT); ui.back = 4; fm1_ms += 120000; ui_draw();     /* BACK OFF: the page stays ... */
+    if (ui.page != PG_FILT) { printf("zp12 ui: BACK OFF did not keep the page FAIL\n"); return 1; }
+    ui.back = 2; ui.touch_ms = fm1_ms; fm1_ms += 20000; ui_draw();  /* ... 30 s: still there after 20 ... */
+    if (ui.page != PG_FILT) { printf("zp12 ui: BACK 30 s went back after 20 s FAIL\n"); return 1; }
+    fm1_ms += 11000; ui_draw();                                       /* ... and back after 31 */
+    if (ui.page != PG_HOME) { printf("zp12 ui: BACK 30 s did not go back FAIL\n"); return 1; }
+    button(B_GLO); button(B_GLO); button(B_GLO); knob(0, -1); fm1_ms += 20; ui_draw(); ppm("zp12-output");   /* GLO three times: OUTPUT, SMOOTH */
+    if (ui.page != PG_OUTPUT || sp_smooth) { printf("zp12 ui: GLO > OUTPUT > SMOOTH off FAIL\n"); return 1; }
+    knob(0, 1);
+    if (!sp_smooth) { printf("zp12 ui: SMOOTH on again FAIL\n"); return 1; }
+    page(PG_HOME); sq_post(RQ_REC, 0, 0); sq_block(); fm1_ms += 2000; ui_draw(); ppm("zp12-armed");   /* ARMED big */
+    if (!sq.rec_arm) { printf("zp12 ui: REC did not arm FAIL\n"); return 1; }
+    sq_post(RQ_PLAY, 0, 0); sq_block(); fm1_ms += 20; ui_draw(); ppm("zp12-count");               /* COUNT 4 */
+    sq_post(RQ_STOP, 0, 0); sq_block();
+    ui_holds(1u << B_REC, 1u << B_REC, 0); fm1_ms += 1500; ui_holds(1u << B_REC, 0, 0); ui_holds(0, 0, 1u << B_REC); sq_block();
+    if (!sq.rec_arm) { printf("zp12 ui: REC held 1.5 s was not a tap FAIL\n"); return 1; }
+    sq_post(RQ_REC, 0, 0); sq_block();
+    page(PG_SETUP); button(B_GLO); knob(1, 1); knob(2, 1); fm1_ms += 20; ui_draw(); ppm("zp12-click");   /* GLO > CLICK */
+    if (ui.page != PG_CLICK || sq.cin_bars != 2u || !sq.dub_bar) { printf("zp12 ui: GLO > CLICK > COUNT / DUB FAIL\n"); return 1; }
+    sq.cin_bars = 1; sq.dub_bar = 0;
+    page(PG_HOME); ui.held = 1u << B_GLO; ui.glo_used = 0; key_down(4, 0); key_down(5, 0);        /* GLO held: white 3 mutes CH3 (a black key: nothing) */
+    {   /* GLO held: keys 1-8 lit while heard: all but 3 (2.1: lit = on, dark = muted) */
+        uint32_t l, kk, gg, want = 0, q;
+        for (q = 0; q < 27u; q++) if (white_of(q) < 8u && white_of(q) != 2u) want |= 1u << q;
+        ui_leds(&l, &kk, &gg);
+        if (kk != want) { printf("zp12 ui: GLO held does not show the mutes FAIL\n"); return 1; }
+    }
+    ui.held = 0; fm1_ms += 20; ui_draw(); ppm("zp12-mute");
+    if (sp_mute != 4u || sp_solo != 0u || !ui.glo_used) { printf("zp12 ui: GLO + white key 3 did not mute CH3 FAIL\n"); return 1; }
+    ui.held = 1u << B_GLO; key_down(21, 0); ui.held = 0; fm1_ms += 2000; ui_draw(); ppm("zp12-solo");   /* white 13: solo CH5 */
+    if (sp_solo != 16u) { printf("zp12 ui: GLO + white key 13 did not solo CH5 FAIL\n"); return 1; }
+    sp_mute = sp_solo = 0;
+    ui.sel = 4; page(PG_OUT); i = sp_sound[4].cut; knob(2, 3); fm1_ms += 20; ui_draw(); ppm("zp12-out");   /* (pad 5: channel 5, 2.1) */
+    if (sp_sound[4].cut != i || strcmp(ui.msg, "FILTER: PADS 1-2")) { printf("zp12 ui: CUT on CH5 not refused FAIL\n"); return 1; }
+    /* OUT > CHOP: KNOB 1 sets A1's group, the pads held (white 2-4: A2-A4) take it too; A5 stays out */
+    ui.pair = 0; ui.sel = 0; page(PG_OUT); ui.keys = 1u << 2 | 1u << 4 | 1u << 6; knob(0, 1); ui.keys = 0;
+    fm1_ms += 20; ui_draw(); ppm("zp12-chop");
+    if (SPF_CHOP(sp_sound[0].flags) != 1u || SPF_CHOP(sp_sound[1].flags) != 1u || SPF_CHOP(sp_sound[3].flags) != 1u ||
+        SPF_CHOP(sp_sound[4].flags) || strcmp(ui.msg, "4 PADS CHOP 1")) { printf("zp12 ui: OUT > CHOP on held pads FAIL (%s)\n", ui.msg); return 1; }
+    for (i = 0; i < 9u; i++) knob(0, 1);
+    if (SPF_CHOP(sp_sound[0].flags) != 8u || strcmp(ui.msg, "CHOP 8")) { printf("zp12 ui: OUT > CHOP up to 8 FAIL\n"); return 1; }
+    for (i = 0; i < 9u; i++) knob(0, -1);
+    if (SPF_CHOP(sp_sound[0].flags) || SPF_CHOP(sp_sound[1].flags) != 1u || strcmp(ui.msg, "NO CHOP")) { printf("zp12 ui: OUT > CHOP off FAIL\n"); return 1; }
+    printf("zp12 ui: screens written to %s\n", dir);
+    return 0;
+}

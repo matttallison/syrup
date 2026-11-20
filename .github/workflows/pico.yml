@@ -1,0 +1,54 @@
+name: Build PICO (FM-1 drum firmware)
+
+on:
+  push:
+    paths:
+      - 'pico/**'
+      - '.github/workflows/pico.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  firmware:
+    uses: zvenson/fm1-build/.github/workflows/build.yml@v1
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    with:
+      sdk: true
+      # The log is always kept (pico-build.log), so a failed build can be read from the release too.
+      build: |
+        set +e
+        cd pico
+        mkdir -p build
+        ./build.sh --release 0.6-beta > build/pico-build.log 2>&1
+        rc=$?
+        tail -40 build/pico-build.log
+        f=$(ls build/*.fwsc 2>/dev/null | grep -v '^build/pico-' | head -1)
+        [ -n "$f" ] && cp "$f" build/pico-0.6-beta.fwsc
+        echo "build exit $rc" >> build/pico-build.log
+        exit 0
+      packages: pico/build/pico-*
+
+  publish:
+    needs: firmware
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages
+          path: out
+      - name: Publish to the "pico-latest" release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: pico-latest
+          name: PICO for the FM-1 (latest build)
+          make_latest: false
+          files: |
+            out/**/pico-0.6-beta.fwsc
+            out/**/pico-build.log
