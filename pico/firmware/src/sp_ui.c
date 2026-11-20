@@ -45,9 +45,9 @@ static const char *const UI_BACK_NAME[5] = {"6 S", "12 S", "30 S", "60 S", "OFF"
 #endif
 static const char ZP12_VERSION[] = ZP12_VER;
 
-enum { PG_HOME, PG_PAD, PG_WAVE, PG_SOUND, PG_TRUNC, PG_OUT, PG_SFX, PG_FXMIX, PG_FILT, PG_CHO, PG_DLY, PG_REV, PG_SEG, PG_SEG2, PG_SONG, PG_SETUP, PG_CLICK, PG_OUTPUT,
+enum { PG_HOME, PG_WAVE, PG_SOUND, PG_TRUNC, PG_OUT, PG_SFX, PG_FILT, PG_CHO, PG_DLY, PG_REV, PG_SEG, PG_SEG2, PG_SONG, PG_SETUP, PG_CLICK, PG_OUTPUT,
        PG_SAMPLE, PG_N };
-static const char *const PG_NAME[PG_N] = {"MIX", "PAD", "WAVE", "SOUND", "TRUNC", "OUT", "SENDS", "BLEND", "FILTER", "CHORUS", "DELAY", "REVERB",
+static const char *const PG_NAME[PG_N] = {"MIX", "WAVE", "SOUND", "TRUNC", "OUT", "SENDS", "FILTER", "CHORUS", "DELAY", "REVERB",
                                           "LOOP", "TOOLS", "SONG", "SETUP", "CLICK", "OUTPUT", "SAMPLE"};
 #ifndef FELUCCA_UAI
 #define FELUCCA_UAI 0
@@ -75,8 +75,7 @@ enum { B_OCTDN = 0, B_OCTUP = 1, B_FX = 2, B_SEL = 3, B_ENV = 4, B_LFO = 5, B_ED
 /* the page families (the button that opens them): their name, colour, pages; on a page the header says where
  * (EDIT > SOUND) and the tabs take the faders' place */
 static const char *const FAM_NAME[5] = {"MIX", "EDIT", "FX", "SEQ", "GLO"};
-/* PAD and BLEND open their menus: the four controls used most, side by side (the full pages follow them) */
-static const uint8_t FAM_FIRST[5] = {PG_HOME, PG_PAD, PG_FXMIX, PG_SEG, PG_SETUP}, FAM_N[5] = {1, 6, 5, 3, 3 + FELUCCA_UAI};
+static const uint8_t FAM_FIRST[5] = {PG_HOME, PG_WAVE, PG_FILT, PG_SEG, PG_SETUP}, FAM_N[5] = {1, 5, 4, 3, 3 + FELUCCA_UAI};
 static uint32_t fam_of(uint32_t pg) { return pg == PG_HOME ? 0u : pg <= PG_SFX ? 1u : pg <= PG_REV ? 2u : pg <= PG_SONG ? 3u : 4u; }
 static const char *const DTIME_NAME[6] = {"1/4", "1/8", "1/16", "1/32", "8T", "16T"};
 static const char *const CLICK_NAME[3] = {"OFF", "REC", "ON"};
@@ -182,16 +181,6 @@ static void page_cols(char lab[4][8], char val[4][12])   /* (val: an own sample'
             lab[i][0] = 'C'; lab[i][1] = 'H'; lab[i][2] = (char)('1' + c); lab[i][3] = 0;
             num(val[i], ui.mix[c], 3, 0);
         }
-        break;
-    case PG_PAD:                                 /* the pad: its sample, tune, start, decay (each also on its own page) */
-        COL(0, "WAVE", cat(val[0], wave_name(s->wave))); COL(1, "TUNE", num(val[1], s->tune, 2, 1));
-        COL(2, "START", num(val[2], s->start / 10, 3, 0)); COL(3, "DECAY", num(val[3], s->decay, 3, 0));
-        break;
-    case PG_FXMIX:                               /* the master filter and the three FX mixes, to balance while playing */
-        COL(0, "FILTER", djf.v ? (void)(cat(val[0], djf.v < 0 ? "LP" : "HP"), num(val[0] + 2, djf.v < 0 ? -djf.v : djf.v, 2, 0))
-                                : (void)cat(val[0], "OFF"));
-        COL(1, "CHO", num(val[1], fxp.cmix, 3, 0)); COL(2, "DLY", num(val[2], fxp.dmix, 3, 0));
-        COL(3, "SIZE", num(val[3], fxp.size, 3, 0));   /* (the reverb's amount is each pad's send; SENDS page) */
         break;
     case PG_WAVE:
         COL(0, "WAVE", cat(val[0], wave_name(s->wave)));
@@ -302,8 +291,8 @@ static int32_t txt_b(int32_t x, int32_t y, const felucca_font_t *f, const char *
 }
 
 static const char *const PG_HINT[PG_N] = {
-    "KNOBS: FADERS  SEL: 5-8", "SAMPLE, TUNE, START, DECAY", "K1 SAMPLE  K3 COPY: TURN 2X", "PLAY A PAD TO EDIT IT", "K1 START  K2 END  K3 DIR",
-    "PADS HELD TAKE THE CHOP", "SENDS TO THE FX BUS", "FILTER, MIXES, REV SIZE", "MASTER FILTER: LP / HP", "FX BUS: CHORUS", "FX BUS: DELAY",
+    "KNOBS: FADERS  SEL: 5-8", "K1 SAMPLE  K3 COPY: TURN 2X", "PLAY A PAD TO EDIT IT", "K1 START  K2 END  K3 DIR",
+    "PADS HELD TAKE THE CHOP", "SENDS TO THE FX BUS", "MASTER FILTER: LP / HP", "FX BUS: CHORUS", "FX BUS: DELAY",
     "FX BUS: REVERB", "BLACK KEYS PICK THE LOOP", "TURN TWICE: CLEAR / COPY", "K4: SONG ON / OFF", "SELECT: EVERY MENU",
     "CLICK, COUNT-IN, DUB", "CLK OUT: MIDI CLOCK TO USB", "REC: SAMPLE INTO THE PAD"};
 
@@ -424,7 +413,7 @@ static void draw_list(void)
 
 static uint32_t wave_page(void)
 {
-    return ui.page == PG_PAD || ui.page == PG_WAVE || ui.page == PG_TRUNC
+    return ui.page == PG_WAVE || ui.page == PG_TRUNC
 #if FELUCCA_UAI
         || ui.page == PG_SAMPLE
 #endif
@@ -913,19 +902,6 @@ static void knob(uint32_t n, int32_t d)
         sp_mix[c] = ui.mix[c];
         break;
     }
-    case PG_PAD:
-        if (n == 0u) wave_step(one);
-        if (n >= 1u) { ui.turn_pad = ui.sel; ui.turn_ms = fm1_ms; }
-        if (n == 1u) s->tune = (int8_t)sp_clamp(s->tune + one, -24, 12);
-        if (n == 2u) s->start = (uint16_t)sp_clamp(s->start + dd * 3, 0, s->end - 10);
-        if (n == 3u) s->decay = (uint8_t)sp_clamp(s->decay + dd, 0, 127);
-        break;
-    case PG_FXMIX:
-        if (n == 0u) djf.v = (int8_t)sp_clamp(djf.v + d * 2, -64, 63);
-        if (n == 1u) fxp.cmix = (int16_t)sp_clamp(fxp.cmix + dd, 0, 127);
-        if (n == 2u) fxp.dmix = (int16_t)sp_clamp(fxp.dmix + dd, 0, 127);
-        if (n == 3u) fxp.size = (int16_t)sp_clamp(fxp.size + dd, 0, 127);
-        break;
     case PG_WAVE:
         if (n == 0u)
             wave_step(one);
@@ -1124,8 +1100,8 @@ static void button(uint32_t b)
         page(PG_HOME);
         ui_say(ui.shift ? "FADERS 5-8" : "FADERS 1-4");
         break;
-    case B_EDIT: ui.prev_page = ui.page; page(ui.page >= PG_PAD && ui.page < PG_SFX ? ui.page + 1u : PG_PAD); break;
-    case B_FX: page(ui.page >= PG_FXMIX && ui.page < PG_REV ? ui.page + 1u : PG_FXMIX); break;
+    case B_EDIT: ui.prev_page = ui.page; page(ui.page >= PG_WAVE && ui.page < PG_SFX ? ui.page + 1u : PG_WAVE); break;
+    case B_FX: page(ui.page >= PG_FILT && ui.page < PG_REV ? ui.page + 1u : PG_FILT); break;
     case B_SEQ: page(ui.page == PG_SEG ? PG_SEG2 : ui.page == PG_SEG2 ? PG_SONG : PG_SEG); break;
     case B_SAVE: ui.save_req = 1; ui_say("SAVED"); break;
     case B_GLO: page(ui.page >= PG_SETUP && ui.page < PG_SETUP + FAM_N[4] - 1u ? ui.page + 1u : PG_SETUP); break;
