@@ -115,6 +115,7 @@ static void ota_commit(const uint8_t *parm)
 #include "sp_core.c"
 #include "sp_fx.c"
 #include "zp12_kit.h"
+#define SQ_MIDI_OUT(b) midi_out_event(0x0Fu | (uint32_t)(b) << 8)   /* PICO: clock / START / STOP to USB MIDI (cable 0, CIN F) */
 #include "sp_seq.c"
 #include "sp_punch.c"
 /* pad hits go to the audio ISR as requests (sp_seq.c sq_post): sounded, and recorded when REC */

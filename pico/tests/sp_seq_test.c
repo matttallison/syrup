@@ -11,6 +11,8 @@
 #include "../firmware/src/sp_core.c"
 #include "../firmware/src/sp_fx.c"
 #include "zp12_kit.h"
+static uint8_t midi_cap[4096]; static unsigned midi_n;   /* PICO: what SQ_MIDI_OUT sent */
+#define SQ_MIDI_OUT(b) (midi_n < sizeof midi_cap ? (void)(midi_cap[midi_n++] = (uint8_t)(b)) : (void)0)
 #include "../firmware/src/sp_seq.c"
 static int flash_ok;                                    /* (sp_store.c: only pack / unpack here) */
 static void st_read(uint32_t a, void *d, uint32_t n) { (void)a; (void)d; (void)n; }
@@ -364,6 +366,22 @@ int main(int argc, char **argv)
     fseek(wf, 40, SEEK_SET); put32(frames * 4u);
     fclose(wf);
     printf("seq: %.1f s rendered, peak %d\n", frames / (double)SP_FS, peak);
+    /* PICO: MIDI clock out: START then 24 clocks a quarter, STOP with the loop */
+    {
+        unsigned f8 = 0, k2;
+        if (sq.playing) { sq_post(RQ_STOP, 0, 0); block(); }
+        sq.rec_arm = 0; midi_n = 0;
+        sq_post(RQ_PLAY, 0, 0);
+        {   /* (a bar's blocks at the tempo: bpm10 x 96 x 32 x 65536 / (600 x 44100) ticks Q16 each) */
+            uint32_t nb = (uint32_t)((uint64_t)SQ_BAR * 65536u * 10000u / ((uint64_t)sq.bpm10 * SQ_TICKS_K)), q;
+            for (q = 0; q < nb; q++) block();
+        }
+        for (k2 = 0; k2 < midi_n; k2++) f8 += midi_cap[k2] == 0xF8u;
+        printf("seq: CLK OUT %u bytes, %u clocks in a bar\n", midi_n, f8);
+        check(midi_n && midi_cap[0] == 0xFAu && f8 >= 96u && f8 <= 97u, "CLK OUT: START, then 24 clocks a quarter (96 in a bar)");
+        sq_post(RQ_STOP, 0, 0); block(); block();
+        check(midi_cap[midi_n - 1] == 0xFCu, "CLK OUT: STOP when the loop stops");
+    }
     printf(bad ? "SEQ TEST FAILED\n" : "seq test passed\n");
     return bad != 0;
 }

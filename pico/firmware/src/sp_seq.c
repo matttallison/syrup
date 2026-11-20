@@ -16,6 +16,28 @@
 #endif
 #define SQ_PPQ 96u
 #define SQ_BAR (SQ_PPQ * 4u)
+/* PICO: MIDI clock out (SYRUP LINK's sync): 24 a quarter (every 4th of the 96 ticks), START when the loop starts (after
+ * the count-in), STOP with it; zp12.c points SQ_MIDI_OUT at the USB MIDI out (the FM-1's TRS jack is an input only) */
+#ifndef SQ_MIDI_OUT
+#define SQ_MIDI_OUT(b) ((void)0)
+#endif
+static uint8_t sq_clk_out = 1;                   /* GLO > OUTPUT > CLK OUT */
+static uint8_t sq_clk_run;                       /* START sent: the clock runs */
+static uint32_t sq_clk_acc;                      /* ticks Q16 toward the next clock */
+static void sq_clock(uint32_t d)
+{
+    if (!sq_clk_out) { sq_clk_run = 0; return; }
+    if (!sq_clk_run) {
+        sq_clk_run = 1;
+        sq_clk_acc = 4u << 16;                   /* (the first clock with START: beat 1) */
+        SQ_MIDI_OUT(0xFAu);
+    }
+    sq_clk_acc += d;
+    while (sq_clk_acc >= 4u << 16) {
+        sq_clk_acc -= 4u << 16;
+        SQ_MIDI_OUT(0xF8u);
+    }
+}
 #define SQ_NSEG 16u
 #define SQ_MAXEV 512u
 #define SQ_MAXBARS 32u
@@ -219,6 +241,7 @@ static void sq_play(uint32_t on)
             sq.recording = 1;
         sq.rec_arm = 0;
         sq.dub_wait = 0;
+        sq_clk_run = 0;                          /* (PICO: PLAY again: START again, from the 1) */
         sq.playing = 1;
     } else {
         sq_stop_rec();
@@ -376,8 +399,10 @@ static void sq_block(void)
         sq_request(sq_rq[sq_rq_r % SQ_NRQ]);
         sq_rq_r++;
     }
-    if (!sq.playing)
+    if (!sq.playing) {
+        if (sq_clk_run) { sq_clk_run = 0; SQ_MIDI_OUT(0xFCu); }   /* (STOP) */
         return;
+    }
     s = &sq_seg[sq.seg % SQ_NSEG];
     d = (uint32_t)sq.bpm10 * SQ_TICKS_K / 10000u;   /* ticks Q16 a block: bpm10 * 96 * 32 * 65536 / (600 * 44100) */
     if (sq.countin > 0) {                        /* the count-in: its bars of clicks, whatever CLICK is */
@@ -394,9 +419,11 @@ static void sq_block(void)
         sq.pos = (uint32_t)(-sq.countin);       /* (what is left of the block) */
         sq.countin = 0;
         from = 0;
+        sq_clock(sq.pos);
     } else {
         from = sq.pos >> 16;
         sq.pos += d;
+        sq_clock(d);
     }
     len = sq_len(s);
     to = sq.pos >> 16;

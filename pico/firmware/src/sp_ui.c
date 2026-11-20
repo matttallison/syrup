@@ -248,6 +248,7 @@ static void page_cols(char lab[4][8], char val[4][12])   /* (val: an own sample'
         break;
     case PG_OUTPUT:
         COL(0, "SMOOTH", cat(val[0], sp_smooth ? "ON" : "OFF"));
+        COL(1, "CLK OUT", cat(val[1], sq_clk_out ? "ON" : "OFF"));   /* (PICO: MIDI clock to USB, for SYRUP LINK) */
         break;
 #if FELUCCA_UAI
     case PG_SAMPLE: {
@@ -945,6 +946,7 @@ static void knob(uint32_t n, int32_t d)
         break;
     case PG_OUTPUT:
         if (n == 0u) sp_smooth = one > 0;         /* (right: on, left: off) */
+        if (n == 1u) sq_clk_out = one > 0;
         break;
 #if FELUCCA_UAI
     case PG_SAMPLE:
