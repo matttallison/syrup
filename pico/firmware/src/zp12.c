@@ -340,13 +340,13 @@ static void zp12_main(void)
             memcpy(fm1_led, nl, sizeof nl);
             memcpy(fm1_led_dim, nd, sizeof nd);
         }
-        {   /* KNOB 1-4 (encoders 2..5), SELECT (0): tempo, ALGORITHM (1): the pad, PRESETS (6): its sample */
+        {   /* KNOB 1-4 (encoders 2..5), SELECT (0): the pages, ALGORITHM (1): the pad, PRESETS (6): its sample */
             int32_t d;
             for (i = 0; i < 4u; i++)
                 if ((d = fm1_enc_take(2u + i)) != 0)
                     knob(i, d);
-            if ((d = fm1_enc_take(0)) != 0)
-                sq.bpm10 = (uint16_t)sp_clamp((int32_t)sq.bpm10 + d * 5, 400, 2400);
+            if ((d = fm1_enc_take(0)) != 0)             /* SELECT: through every menu page (tempo: GLO > SETUP, TAP) */
+                ui_select(d);
             if ((d = fm1_enc_take(1)) != 0)
                 ui.sel = (uint8_t)((ui.sel + SP_NSOUND + (d > 0 ? 1 : SP_NSOUND - 1)) % SP_NSOUND);
             if ((d = fm1_enc_take(6)) != 0)
