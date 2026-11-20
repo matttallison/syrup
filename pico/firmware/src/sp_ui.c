@@ -275,8 +275,8 @@ static uint32_t on_page(void) { return ui.page != PG_HOME; }   /* the knobs are 
 static void draw_head(void)                     /* the header: the name; on a page where you are (EDIT > SOUND) */
 {
     cv_begin(240, 20, P_FRAME);
-    cv_text_on(6, 2, &FONT_S, "zp12", P_INK, P_FRAME);
-    cv_text_on(7, 2, &FONT_S, "zp12", P_INK, P_FRAME);   /* (bold: twice, a pixel apart) */
+    cv_text_on(6, 2, &FONT_S, "PICO", P_INK, P_FRAME);
+    cv_text_on(7, 2, &FONT_S, "PICO", P_INK, P_FRAME);   /* (bold: twice, a pixel apart) */
     if (on_page()) {
         uint32_t fm = fam_of(ui.page);
         char b[24], *p = cat(b, FAM_NAME[fm]);
@@ -1191,7 +1191,7 @@ static void ui_splash(uint32_t t)
     if (t < 1300u)
         cv_rect((int32_t)n, 8, 2, 96, P_RED);    /* the write head */
     {
-        static const char NAME[] = "zp12";
+        static const char NAME[] = "PICO";
         uint32_t k = t < 1350u ? 0u : t < 1550u ? 1u : t < 1850u ? 2u : 4u;
         char nm[5];
         for (i = 0; i < k; i++) nm[i] = NAME[i];

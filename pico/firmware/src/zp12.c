@@ -31,7 +31,7 @@ static volatile uint32_t fm1_ms;
 #define FELUCCA_UAI 1                          /* the FM-1 as the computer's speaker: sampling on the machine (sp_sampler.c) */
 #define FELUCCA_UART 1                         /* the TRS MIDI IN jack (midi_uart.c, sloopDX's) */
 #ifndef FELUCCA_ID
-#define FELUCCA_ID "FM-1_970"                   /* package identity: 97N = zp12 build N */
+#define FELUCCA_ID "FM-1_960"                   /* package identity: 96N = PICO build N (zp12 is 97N) */
 #endif
 #include "usb.c"
 #include "midi_uart.c"

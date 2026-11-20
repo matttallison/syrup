@@ -252,7 +252,7 @@ static const uint8_t STR2[] = {30, 3, 'F', 0, 'e', 0, 'l', 0, 'u', 0, 'c', 0, 'c
                                'd', 0, 'a', 0, 't', 0, 'e', 0};
 #else
 #ifdef FELUCCA_PRODUCT_NAME
-static const uint8_t STR2[] = {20, 3, 'z', 0, 'p', 0, '1', 0, '2', 0, ' ', 0, 'F', 0, 'M', 0, '-', 0, '1', 0};   /* "zp12 FM-1": the firmware's own name on the computer;
+static const uint8_t STR2[] = {20, 3, 'P', 0, 'I', 0, 'C', 0, 'O', 0, ' ', 0, 'F', 0, 'M', 0, '-', 0, '1', 0};   /* "PICO FM-1" (was "zp12 FM-1"): the firmware's own name on the computer;
                                                          * FM-1 in it, so every installer's port pattern still finds it */
 #else
 static const uint8_t STR2[] = {16, 3, 'F', 0, 'e', 0, 'l', 0, 'u', 0, 'c', 0, 'c', 0, 'a', 0};
