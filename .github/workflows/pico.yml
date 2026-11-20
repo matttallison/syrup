@@ -23,6 +23,7 @@ jobs:
       build: |
         set +e
         cd pico
+        python3 -m pip install -q numpy
         mkdir -p build
         python3 tools/build.py --release 0.6-beta > build/pico-build.log 2>&1
         rc=$?
