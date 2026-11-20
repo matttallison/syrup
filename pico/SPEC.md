@@ -82,3 +82,14 @@ What the first PICO (FM-1 builds up to t127, Nov 2026) did, decided with Matt. T
 
 PICO is the clock: over Wi-Fi it sends MIDI clock and start / stop to Syrup on the 2DS / 3DS (UDP 5008, plain MIDI
 bytes; Syrup announces itself on UDP 5009, as fm1link does), so Syrup plays in time with PICO.
+
+## Flash layout (rebuild, as t127)
+
+- App slot 0x56FBC (tools/fm1pkg_make.py): the app area ends below 0x5C000; the build fails if it would not.
+- Sample room 0x5C000-0x93000 (~220 KB, ~5.7 s at 12/26K), `firmware/src/pico_room.h`, the one place for its bounds.
+  The update loader in PICO's packages never writes it (ldr_core.c); the XIP plain window starts there, so the
+  samples read unencrypted; the sampler, the editor link and zu_room take it as one more room.
+- The update is done by the loader inside the package being flashed, so every PICO package keeps the room.
+  Stock zp12 / SLOOP packages write the whole app area: back up with PICO's backup page before flashing them.
+- Saves and the other rooms are zp12's, unchanged. The kit changed (bank A only), so the first start of the
+  rebuild resets the pads to the factory kit; samples stay.

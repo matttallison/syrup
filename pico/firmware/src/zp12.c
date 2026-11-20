@@ -4,6 +4,7 @@
  * USB rescue, so the web installer always reaches the FM-1), the sound core (sp_core.c), the factory kit
  * (build/gen/zp12_kit.h, tools/gen_kit.py) and the panel (sp_ui.c). */
 #include <stdint.h>
+#include "pico_room.h"
 #include "fm1_time.h"
 #include "fm1_sys.h"
 #include "fm1_irq.h"
@@ -39,7 +40,7 @@ static volatile uint32_t fm1_ms;
 /* ---- flash: read anywhere, erase / program only the update's staging area (saving comes later) */
 /* (the app writes Felucca's store, the update staging and, for the web tools, the free rooms above it:
  * 0xE5000..0xE8FFF and 0xEA000..0xFBFFF; sp_link.c narrows that to zp12's own and sloopDX's banks) */
-#define FL_RANGE_OK(off, n) (FL_STORE_OK(off, n) || FL_IN(off, n, FL_OTA_LO, 0xE9000u) || FL_IN(off, n, 0xEA000u, 0xFC000u))
+#define FL_RANGE_OK(off, n) (FL_STORE_OK(off, n) || FL_IN(off, n, PICO_ROOM_LO, PICO_ROOM_HI) || FL_IN(off, n, FL_OTA_LO, 0xE9000u) || FL_IN(off, n, 0xEA000u, 0xFC000u))
 #include "fm1_flash.h"
 static uint8_t flash_ok;
 static int st_read(uint32_t off, void *dst, uint32_t n)

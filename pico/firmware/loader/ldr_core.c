@@ -30,6 +30,7 @@
  * plus the ota.c hooks (frames, time, idle). */
 #define LDR_APP_LO 0x4000u
 #define LDR_APP_HI 0x93000u
+#include "../src/pico_room.h"               /* PICO: the sample room in the app space, never written (t127's skip) */
 #define LDR_REC_LO 0x93000u                     /* update records live above the app ... */
 #define LDR_REC_HI 0xFC000u                     /* ... and below Felucca's globals */
 
@@ -136,6 +137,11 @@ static int ldr_pass(void)
             if (ota_read(fl_off + s + k, sec + k, 512))
                 return -7;
         crc = ota_crc16(sec, 0x1000u, crc);
+        if (s >= PICO_ROOM_LO && s < PICO_ROOM_HI) {     /* PICO: the samples stay */
+            done += 0x1000u;
+            ldr_progress(done, LDR_APP_HI - LDR_APP_LO);
+            continue;
+        }
         if (ldr_fread(s, cur, 0x1000u))
             return -8;
         if (!ota_memeq(sec, cur, 0x1000u)) {

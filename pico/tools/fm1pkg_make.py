@@ -21,7 +21,8 @@ import os
 import struct
 from pathlib import Path
 
-APP_SLOT = 0x8DFBC
+APP_SLOT = 0x56FBC                      # PICO: as t127; the app area ends below the sample room
+ROOM_LO, ROOM_HI = 0x5C000, 0x93000     # PICO's sample room in the app space (firmware/src/pico_room.h; the loader skips it)
 FLASH_SIZE = 0x93000
 KEY = 0x980F
 # flash header: JieLi SDK defaults (burner_size 544, VID "0.01", flash_size 0xFF000,
@@ -144,6 +145,8 @@ def flash_image(app, key):
     sfc(region, 0, len(region), 0, key)
     if 0x4000 + len(region) > FLASH_SIZE:          # (the update loader writes up to FLASH_SIZE only)
         raise SystemExit(f"app area too large: ends at 0x{0x4000 + len(region):x}, past 0x{FLASH_SIZE:x}")
+    if 0x4000 + len(region) > ROOM_LO:            # (PICO: never into the sample room)
+        raise SystemExit(f"app area ends at 0x{0x4000 + len(region):x}, past PICO's sample room at 0x{ROOM_LO:x}")
     f[0x4000:0x4000 + len(region)] = region
     return bytes(f)
 

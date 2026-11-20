@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
+#include "pico_room.h"
 /* Sampling on the machine. The computer (or a phone) plays into the FM-1 over USB (usb.c FELUCCA_UAI, the
  * FM-1 is its speaker); the SAMPLE page (GLO > SAMPLE, or LFO tapped) takes it into flash as an own sample, onto
  * the selected pad. REC: the room is erased first (ERASE %: the flash holds everything while it erases, the
@@ -20,10 +21,11 @@ static int32_t smp_z1, smp_z2, smp_prev, smp_hold;
 static uint8_t smp_has_hold;
 
 /* the rooms a sample may lie in (as sp_samples.c zu_room), [lo, hi) */
-static uint32_t smp_rooms(uint32_t r[4][2])
+static uint32_t smp_rooms(uint32_t r[5][2])
 {
     uint32_t n = 0;
     if (zu_dir.magic == ZU_MAGIC && (zu_dir.flags & 1u)) { r[n][0] = 0xA0000u; r[n++][1] = 0xC4000u; }
+    r[n][0] = PICO_ROOM_LO; r[n++][1] = PICO_ROOM_HI;   /* PICO: the kit's old room */
     r[n][0] = 0xDA000u; r[n++][1] = 0xDC000u;
     r[n][0] = 0xE5000u; r[n++][1] = 0xE9000u;
     r[n][0] = 0xEA000u; r[n++][1] = 0xFC000u;
@@ -48,7 +50,7 @@ static int smp_replaceable(uint32_t pad)
 /* the largest free run, in whole 4 KiB sectors (an erase must not touch a sample beside it) */
 static void smp_find(uint32_t *off, uint32_t *end)
 {
-    uint32_t r[4][2], nr = smp_rooms(r), k, i, j, best = 0;
+    uint32_t r[5][2], nr = smp_rooms(r), k, i, j, best = 0;
     *off = *end = 0;
     for (k = 0; k < nr; k++) {
         for (j = 0; j <= SP_NUSER; j++) {          /* a run starts at the room's start or after a sample */

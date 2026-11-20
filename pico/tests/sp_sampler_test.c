@@ -4,6 +4,10 @@
  * the directory the web editor reads. The flash is RAM here (erased = 0xFF; a write can only clear bits).
  *   cc -O2 -Wall -Wno-unused-function -Ifirmware/src -o build/host/sp_sampler_test tests/sp_sampler_test.c -lm && build/host/sp_sampler_test */
 #include <stdio.h>
+#ifndef PICO_ROOM_LO                                    /* zp12's rooms only (PICO's room: -DPICO_ROOM_TEST) */
+#define PICO_ROOM_LO 0x5C000u
+#define PICO_ROOM_HI 0x5C000u
+#endif
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>

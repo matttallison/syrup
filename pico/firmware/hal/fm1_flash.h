@@ -217,11 +217,19 @@ static RAMFN int fl_read_ram(uint32_t off, uint8_t *dst, uint32_t n)   /* 0x0B f
 static void fl_plain_window_init(void)
 {
     SFCENC_CON &= (uint8_t)~2u;
+#ifdef PICO_ROOM_LO
+    SFCENC_UNENC_L = FL_XIP(PICO_ROOM_LO);        /* PICO: the sample room below the data area is plain too */
+#else
     SFCENC_UNENC_L = FL_XIP(0x93000u);            /* 0x0208F000 */
+#endif
     SFCENC_UNENC_H = 0x07FFFFFFu;
     SFCENC_CON |= 2u;
     __asm__ volatile("cli" ::: "memory");
+#ifdef PICO_ROOM_LO
+    fl_inval(PICO_ROOM_LO, 0x100000u - PICO_ROOM_LO);   /* drop any decrypted lines */
+#else
     fl_inval(0x93000u, 0x100000u - 0x93000u);     /* drop any decrypted lines */
+#endif
     __asm__ volatile("csync\n\tsti" ::: "memory");
 }
 

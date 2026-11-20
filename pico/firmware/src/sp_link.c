@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
+#include "pico_room.h"
 /* zp12's USB link for the web tools (backup now, the sample editor next): a few raw flash commands, the
  * logic in the browser. A message is F0 pack7(7D 'Z' 'P' cmd addr:3 len:2 data:len sum) F7, packed as the
  * updater's (ota.c: ota_pack7), sum = ~(the bytes from cmd on); the reply has the same header and cmd, then
@@ -23,7 +24,7 @@ static int zl_busy(void) { return zl_last && (uint32_t)(fm1_ms - zl_last) < 1000
 
 static int zl_writable(uint32_t a, uint32_t n)
 {
-    return FL_IN(a, n, 0xA0000u, 0xDC000u) || FL_IN(a, n, 0xE5000u, 0xE9000u) || FL_IN(a, n, 0xEA000u, 0xFC000u);
+    return FL_IN(a, n, PICO_ROOM_LO, PICO_ROOM_HI) || FL_IN(a, n, 0xA0000u, 0xDC000u) || FL_IN(a, n, 0xE5000u, 0xE9000u) || FL_IN(a, n, 0xEA000u, 0xFC000u);
 }
 
 static void zl_reply(uint32_t cmd, uint32_t rc, uint32_t a, const uint8_t *d, uint32_t n)

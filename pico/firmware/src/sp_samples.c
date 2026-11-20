@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
+#include "pico_room.h"
 /* zp12's own samples, put there by the web editor (web/editor.html over sp_link.c): a directory in flash, two
  * copies (0xD8000, 0xD9000) with a generation and a CRC, the newest good one counts; the samples themselves
  * packed as the kit's (12 bit, 2 in 3 bytes) in the free rooms, read through the plain XIP window. Here they
@@ -13,7 +14,7 @@ static zu_dir_t zu_dir;
 
 static int zu_room(uint32_t off, uint32_t bytes)  /* inside one room the editor may fill */
 {
-    return FL_IN(off, bytes, 0xA0000u, 0xC4000u) || FL_IN(off, bytes, 0xDA000u, 0xDC000u) ||
+    return FL_IN(off, bytes, PICO_ROOM_LO, PICO_ROOM_HI) || FL_IN(off, bytes, 0xA0000u, 0xC4000u) || FL_IN(off, bytes, 0xDA000u, 0xDC000u) ||
            FL_IN(off, bytes, 0xE5000u, 0xE9000u) || FL_IN(off, bytes, 0xEA000u, 0xFC000u);
 }
 
