@@ -39,7 +39,7 @@ Sister project: sloopDX in `../sloopdx` (its installer and effects are reused he
   WRITE (only 0xA0000-0xDBFFF, 0xE5000-0xE8FFF, 0xEA000-0xFBFFF: sloopDX's banks + zp12's rooms), HOLD, REBOOT, RELOAD, ASSIGN, PADS. The
   logic is in `web/zp12link.js` (backup / restore; the sample editor goes on top). Image ~565 of 582 KB (FONT_S cut to ASCII saved 12.9 KB; -Oz would save 4.3 KB more but slows the audio ISR: untried on the device).
 - `sp_ui.c`: panel look (header, big LCD line + 4 columns for KNOB 1-4, faders, pads, LEDs via `ui_leds()`).
-  HOME: KNOB 1-4 = pad volumes 1-4, SEL held 5-8. EDIT: WAVE, SOUND, TRUNC, OUT, SENDS. FX: CHORUS, DELAY,
+  HOME: KNOB 1-4 = pad volumes 1-4, SEL held 5-8. EDIT: PAD (WAVE TUNE START DECAY), WAVE, SOUND, TRUNC, OUT, SENDS. FX: BLEND (FILTER, CHO MIX, DLY MIX, REV SIZE), FILTER, CHORUS, DELAY,
   REVERB. SEQ tap: LOOP, TOOLS (CLEAR, COPY>, COPY: turn twice), SONG. GLO tap: SETUP (TEMPO, BACK, RESET), CLICK (CLICK,
   COUNT, DUB), OUTPUT (SMOOTH); GLO held + white 1-8 mute / 9-16 solo. REC: a press under 2 s is a tap, held 2 s clears.
   Pages return after 6 s. White keys 1-8/9-16 = banks A/B (OCT+ C/D), ARP = MULTI PITCH (last pad over 27 keys,

@@ -59,7 +59,15 @@ int main(int argc, char **argv)
     key_down(0, 0); key_down(4, 0); fm1_ms += 20; knob(2, -30); ui_draw(); ppm("zp12-hit");
     button(B_SEQ); fm1_ms += 2000; ui_draw(); ppm("zp12-seg");
     sq.playing = 1; sq.recording = 1; sq.pos = (SQ_BAR + 2u * SQ_PPQ) << 16; sq_seg[0].bars = 2; fm1_ms += 10; ui_draw(); ppm("zp12-rec");
-    sq.playing = 0; sq.recording = 0; button(B_EDIT); button(B_EDIT); button(B_EDIT); button(B_EDIT); knob(3, 60); fm1_ms += 2000; ui_draw(); ppm("zp12-sfx");
+    sq.playing = 0; sq.recording = 0;
+    button(B_EDIT); if (ui.page != PG_PAD) { printf("zp12 ui: EDIT should open PAD first FAIL\n"); return 1; }   /* PAD: WAVE TUNE START DECAY */
+    { int32_t t0 = sp_sound[ui.sel].tune, d0 = sp_sound[ui.sel].decay; knob(1, 1); knob(3, 5); fm1_ms += 2000; ui_draw(); ppm("zp12-pad");
+      if (sp_sound[ui.sel].tune != t0 + 1 || sp_sound[ui.sel].decay == d0) { printf("zp12 ui: PAD knobs FAIL\n"); return 1; }
+      sp_sound[ui.sel].tune = (int8_t)t0; sp_sound[ui.sel].decay = (uint8_t)d0; }
+    button(B_EDIT); button(B_EDIT); button(B_EDIT); button(B_EDIT); knob(3, 60); fm1_ms += 2000; ui_draw(); ppm("zp12-sfx");
+    button(B_FX); if (ui.page != PG_FXMIX) { printf("zp12 ui: FX should open FX MIX first FAIL\n"); return 1; }
+    { int32_t c0 = fxp.cmix, z0 = fxp.size; knob(1, -20); knob(3, 10); fm1_ms += 2000; ui_draw(); ppm("zp12-fxmix");
+      if (fxp.cmix >= c0 || fxp.size == z0) { printf("zp12 ui: FX MIX knobs FAIL\n"); return 1; } fxp.cmix = (int16_t)c0; fxp.size = (int16_t)z0; }
     button(B_FX); knob(0, -9); fm1_ms += 2000; ui_draw(); ppm("zp12-filter"); djf.v = 0; button(B_FX); button(B_FX); fm1_ms += 2000; ui_draw(); ppm("zp12-delay");
     fm1_ms += 13000; ui_draw(); ppm("zp12-back");           /* untouched 12 s: the faders again */
     if (ui.page != PG_HOME) { printf("zp12 ui: a page did not go back after 12 s FAIL\n"); return 1; }
