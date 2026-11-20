@@ -290,7 +290,7 @@ int main(int argc, char **argv)
             djf.v = (int8_t)v[m];
             djf.res = m == 2u ? 127 : 40;               /* (the high-pass with the resonance up: still bounded) */
             for (i = 0; i < 300u; i++) block();          /* (the glide) */
-            sp_trigger(KIT_MOVED[4], 127);               /* (the hat: 2.0's pad 4, 2.1's pad 3) */
+            sp_trigger(2, 127);                          /* (the hat: A3) */
             for (i = 0; i < 200u; i++) {
                 memset(o, 0, sizeof o); sp_render(o);
                 for (j = 0; j < 2u * SP_BLK; j++) if (abs(o[j]) > pk[m]) pk[m] = abs(o[j]);
@@ -365,6 +365,7 @@ int main(int argc, char **argv)
     fseek(wf, 4, SEEK_SET); put32(36u + frames * 4u);
     fseek(wf, 40, SEEK_SET); put32(frames * 4u);
     fclose(wf);
+    wf = 0;
     printf("seq: %.1f s rendered, peak %d\n", frames / (double)SP_FS, peak);
     /* PICO: MIDI clock out: START then 24 clocks a quarter, STOP with the loop */
     {
